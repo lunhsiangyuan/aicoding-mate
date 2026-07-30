@@ -2,7 +2,7 @@
 
 AI Coding Mate 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目標、優先順序與不能碰的邊界；系統負責把技術工作交給 Firstmate、Herdr 與不同模型，並把結果整理成能直接閱讀的報告。
 
-> 目前狀態：v0.1 規格已確認，repository 先以 spec-first 方式建立；執行程式尚未發布。
+> 目前狀態：v0.1 規格已確認；T1 已提供 Herdr 可開啟的 runtime doctor 入口。這個入口只診斷 Herdr、Firstmate、Codex、Claude、git、gh、jq 與 Bun 狀態，不宣稱 Firstmate workflow 已接通。
 
 ## 它要解決什麼
 
@@ -64,6 +64,28 @@ v0.1 將提供兩個入口，內容等價：
 - [Adapter Registry](config/adapters.example.yaml)
 
 模型名稱不寫死。設定檔使用「最強推理」、「平衡建置」、「快速搜尋」等邏輯角色，再由 adapter 對應到當下可用的實際模型。
+
+## T1：從 Herdr 開啟診斷面
+
+AI Coding Mate 目前提供一條最小可用路徑：安裝 dependencies、link 成 Herdr local plugin，然後開啟診斷 pane。
+
+```bash
+bun install
+bun bin/aicoding-mate link
+bun bin/aicoding-mate open
+```
+
+也可以直接檢查 CLI 與 doctor：
+
+```bash
+bun bin/aicoding-mate --help
+bun bin/aicoding-mate doctor
+bun bin/aicoding-mate doctor --json
+```
+
+doctor 的每個項目都來自 runtime read-back：Herdr 會讀 `herdr status server` 與 `herdr api snapshot`，其他工具會執行各自的 `--version`。缺少工具時，輸出會列出可執行的下一步。Herdr plugin pane 使用 `herdr-plugin.toml` 中的 argv command；Herdr 不做 shell expansion，因此 pane entrypoint 只依賴 plugin runtime 的工作目錄與 `HERDR_PLUGIN_*` 環境變數。
+
+安裝或 link Herdr plugin 代表在本機以使用者權限執行此 repository 的程式碼；請先檢查 `herdr-plugin.toml`、`bin/aicoding-mate` 與 `src/`。
 
 ## 上游相容性基準
 

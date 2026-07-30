@@ -1,0 +1,20 @@
+{
+  "name": "aicoding-mate",
+  "version": "0.1.0",
+  "description": "Herdr diagnostic entrypoint for AI Coding Mate.",
+  "type": "module",
+  "bin": {
+    "aicoding-mate": "./bin/aicoding-mate"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "doctor": "bun bin/aicoding-mate doctor",
+    "link": "bun bin/aicoding-mate link",
+    "open": "bun bin/aicoding-mate open"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.19",
+    "typescript": "^5.8.3"
+  }
+}
