@@ -11,6 +11,12 @@ title = "Run AI Coding Mate doctor"
 contexts = ["workspace"]
 command = ["bun", "bin/aicoding-mate", "doctor"]
 
+[[actions]]
+id = "context-branch"
+title = "用 AI Coding Mate 深入了解選取內容"
+contexts = ["selection"]
+command = ["bun", "bin/aicoding-mate", "context-branch-start"]
+
 [[panes]]
 id = "doctor"
 title = "AI Coding Mate"
@@ -22,3 +28,15 @@ id = "quick"
 title = "AI Coding Mate Quick"
 placement = "tab"
 command = ["bun", "bin/aicoding-mate", "quick-pane"]
+
+[[panes]]
+id = "standard"
+title = "AI Coding Mate Standard"
+placement = "tab"
+command = ["bun", "bin/aicoding-mate", "standard-pane"]
+
+[[panes]]
+id = "context-branch"
+title = "AI Coding Mate Context Branch"
+placement = "tab"
+command = ["bun", "bin/aicoding-mate", "context-branch-pane"]

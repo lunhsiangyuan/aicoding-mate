@@ -22,6 +22,8 @@ describe("cli", () => {
     expect(code).toBe(0);
     expect(buffer.stdout).toContain("用法");
     expect(buffer.stdout).toContain("doctor");
+    expect(buffer.stdout).toContain("standard");
+    expect(buffer.stdout).toContain("context-branch-start");
   });
 
   test("unknown command is a bad input with help", async () => {
@@ -49,5 +51,27 @@ describe("cli", () => {
     const parsed = JSON.parse(buffer.stdout);
     expect(parsed.summary.ready).toBe(false);
     expect(parsed.tools.some((tool: { status: string }) => tool.status === "missing")).toBe(true);
+  });
+
+  test("standard fails closed before dispatch outside a Herdr pane", async () => {
+    const buffer = new BufferIO();
+    const code = await main(
+      ["standard", "--task", "分析目前架構"],
+      buffer.io({ PATH: "" }),
+    );
+
+    expect(code).toBe(1);
+    expect(buffer.stdout).toContain("BLOCKED");
+  });
+
+  test("context branch start requires a Herdr selection context", async () => {
+    const buffer = new BufferIO();
+    const code = await main(
+      ["context-branch-start"],
+      buffer.io({ PATH: process.env.PATH }),
+    );
+
+    expect(code).toBe(1);
+    expect(buffer.stderr).toContain("選取文字 action");
   });
 });

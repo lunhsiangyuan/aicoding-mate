@@ -444,7 +444,7 @@ export function toConfirmedCapsule(
   return {
     ok: true,
     value: {
-      capsuleId: session.branchId,
+      capsuleId: session.lineageIntentId,
       selectedText: session.selectedText,
       selectedTextHash: session.selectedTextHash,
       source: session.source,

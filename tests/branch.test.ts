@@ -164,6 +164,7 @@ describe("context branch core", () => {
     const capsule = toConfirmedCapsule(confirmed.value);
     expect(capsule.ok).toBe(true);
     if (!capsule.ok) throw new Error(capsule.reason);
+    expect(capsule.value.capsuleId).toBe(confirmed.value.lineageIntentId);
     expect(capsule.value.firstmateSessionRef).toBe("firstmate-session-1");
     expect(capsule.value.mutationIntent).toBe("new_task");
 
