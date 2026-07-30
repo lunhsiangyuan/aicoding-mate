@@ -46,7 +46,7 @@ AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herd
 - `Open in Codex Review` 直接使用 Codex 原生 review／annotation 介面。
 - 沿用既有 Claude Code／Codex skills 與 adapters，不改寫內部 prompt。
 
-完整需求見 [產品規格](docs/SPEC.md)，系統邊界見 [架構說明](docs/ARCHITECTURE.md)，交付順序見 [實作計畫](docs/IMPLEMENTATION_PLAN.md)。
+完整需求見 [產品規格](docs/SPEC.md)，系統邊界見 [架構說明](docs/ARCHITECTURE.md)，交付順序見 [實作計畫](docs/IMPLEMENTATION_PLAN.md)，Codex review handoff 現況見 [Codex Review Handoff 可行性](docs/CODEX_REVIEW_FEASIBILITY.md)。
 
 ## 設定方式
 
