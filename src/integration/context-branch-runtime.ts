@@ -188,9 +188,9 @@ export function createDefaultBranchClassifier(
   env: NodeJS.ProcessEnv,
 ): BranchClassifierPort {
   return (input) => {
-    const output = runClaudeText(
+    const output = runBranchText(
       [
-        "只輸出 new_task 或 modify_task，不要其他文字。",
+        "只輸出 new_task 或 modify_task；若輸出 JSON，格式必須是 {\"intent\":\"new_task\"} 或 {\"intent\":\"modify_task\"}。",
         "若內容要求延伸出獨立工作，選 new_task；若要求改動來源工作，選 modify_task。",
         `選取內容：${input.selectedText}`,
         `簡介：${input.brief}`,
@@ -199,7 +199,8 @@ export function createDefaultBranchClassifier(
       cwd,
       env,
     );
-    if (output === "new_task" || output === "modify_task") return output;
+    const intent = parseBranchIntent(output);
+    if (intent !== null) return intent;
     throw new Error("branch_classifier_contract_invalid");
   };
 }
@@ -209,9 +210,10 @@ export function createDefaultBranchResearcher(
   env: NodeJS.ProcessEnv,
 ): BranchResearcherPort {
   return (input) => {
-    const output = runClaudeText(
+    const output = runBranchText(
       [
         "請用繁體中文簡介這段內容需要理解的技術概念。",
+        "若輸出 JSON，格式必須是 {\"summary\":\"...\"}。",
         "先說架構與用途，再說最多三個需要知道的細節；不要輸出實作流水帳。",
         `內容：${input.selectedText}`,
         `現有簡介：${input.brief}`,
@@ -219,10 +221,15 @@ export function createDefaultBranchResearcher(
       cwd,
       env,
     );
-    if (!output) throw new Error("branch_research_contract_invalid");
+    const summary = parseBranchSummary(output);
+    if (summary === null) throw new Error("branch_research_contract_invalid");
     return {
-      summary: output,
-      evidence: [`claude:${env.ACM_CLAUDE_REVIEW_MODEL ?? "fable"}`],
+      summary,
+      evidence: [
+        env.ACM_CLAUDE_REVIEW_DISABLED === "1"
+          ? `codex:${env.ACM_CODEX_REVIEW_MODEL ?? "codex-session-default"}`
+          : `claude:${env.ACM_CLAUDE_REVIEW_MODEL ?? "fable"}`,
+      ],
     };
   };
 }
@@ -359,6 +366,13 @@ export function resolveFirstmateSourceBinding(
         record.source.paneId === focusedPaneId ||
         record.worker.target === focusedPaneId,
     )
+    .filter(
+      (record) =>
+        record.source.paneId !== undefined &&
+        record.worker.taskId !== undefined &&
+        record.worker.target !== undefined &&
+        record.recordPath !== undefined,
+    )
     .sort((left, right) =>
       left.updatedAt < right.updatedAt
         ? 1
@@ -370,6 +384,7 @@ export function resolveFirstmateSourceBinding(
   if (
     record === undefined ||
     record.source.paneId === undefined ||
+    record.worker.taskId === undefined ||
     record.worker.target === undefined ||
     record.recordPath === undefined
   ) {
@@ -562,6 +577,81 @@ function runClaudeText(
     throw new Error(compactFailure("claude_branch_failed", result.stderr));
   }
   return result.stdout.trim();
+}
+
+function runBranchText(
+  prompt: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (env.ACM_CLAUDE_REVIEW_DISABLED === "1") {
+    return runCodexText(prompt, cwd, env);
+  }
+  return runClaudeText(prompt, cwd, env);
+}
+
+function runCodexText(
+  prompt: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  const args = [
+    "exec",
+    "--ephemeral",
+    "--sandbox",
+    "read-only",
+    "-c",
+    'web_search="disabled"',
+    "-c",
+    "mcp_servers={}",
+  ];
+  const model = env.ACM_CODEX_REVIEW_MODEL;
+  if (model !== undefined && model.trim()) {
+    args.push("--model", model);
+  }
+  args.push(prompt);
+  const result = run("codex", args, cwd, env, 240_000);
+  if (result.status !== 0 || !result.stdout.trim()) {
+    throw new Error(compactFailure("codex_branch_failed", result.stderr));
+  }
+  return result.stdout.trim();
+}
+
+function parseBranchIntent(output: string): "new_task" | "modify_task" | null {
+  const normalized = output.trim();
+  if (normalized === "new_task" || normalized === "modify_task") {
+    return normalized;
+  }
+  const record = parseJsonObjectFromText(normalized);
+  const intent = record?.intent;
+  return intent === "new_task" || intent === "modify_task" ? intent : null;
+}
+
+function parseBranchSummary(output: string): string | null {
+  const normalized = output.trim();
+  if (!normalized) return null;
+  const record = parseJsonObjectFromText(normalized);
+  if (record === null) return normalized;
+  const summary = record.summary;
+  if (typeof summary !== "string" || !summary.trim()) return null;
+  return summary.trim();
+}
+
+function parseJsonObjectFromText(
+  text: string,
+): Record<string, unknown> | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const value: unknown = JSON.parse(text.slice(start, end + 1));
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function herdrHasPane(

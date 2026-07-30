@@ -1,11 +1,21 @@
-import { mkdtempSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
 import {
+  createDefaultBranchClassifier,
+  createDefaultBranchResearcher,
   readBranchSession,
+  resolveFirstmateSourceBinding,
   startContextBranch,
   type FirstmateSourceBinding,
 } from "../src/integration/context-branch-runtime.ts";
@@ -90,6 +100,54 @@ describe("context branch runtime", () => {
     expect(opened).toBe(false);
   });
 
+  test("uses the latest complete Firstmate binding when a newer failed run shares the source pane", () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-branch-"));
+    const runsDir = join(root, "runs");
+    mkdirSync(runsDir);
+    const validPath = join(runsDir, "quick-valid.json");
+    writeFileSync(
+      validPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recipe: "quick",
+        id: "quick-valid",
+        updatedAt: "2026-07-30T16:00:00.000Z",
+        source: { paneId: "w1:p1" },
+        worker: {
+          taskId: "quick-valid",
+          target: "default:w1:p2",
+        },
+        recordPath: validPath,
+        firstmateRoot: "/tmp/firstmate",
+        fmHome: "/tmp/fm-home",
+        herdr: { session: "default" },
+      }),
+    );
+    writeFileSync(
+      join(runsDir, "quick-failed.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        recipe: "quick",
+        id: "quick-failed",
+        updatedAt: "2026-07-30T16:01:00.000Z",
+        source: { paneId: "w1:p1" },
+        worker: {},
+      }),
+    );
+
+    expect(resolveFirstmateSourceBinding(root, "w1:p1")).toEqual({
+      taskId: "quick-valid",
+      runId: "quick-valid",
+      firstmateSessionRef: "quick-valid",
+      sourcePaneId: "w1:p1",
+      quickRecordPath: validPath,
+      firstmateRoot: "/tmp/firstmate",
+      fmHome: "/tmp/fm-home",
+      herdrSession: "default",
+      workerTarget: "default:w1:p2",
+    });
+  });
+
   test("fails closed when Herdr action has no selected text", () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-branch-"));
     const result = startContextBranch({
@@ -154,5 +212,78 @@ describe("context branch runtime", () => {
     expect(first.session.lineageIntentId).not.toBe(
       second.session.lineageIntentId,
     );
+  });
+
+  test("uses explicit Codex fallback for branch classifier and researcher when Claude review is disabled", () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-branch-"));
+    const bin = join(root, "bin");
+    const claudeMarker = join(root, "claude-called");
+    const codexArgsLog = join(root, "codex-args.log");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "claude"),
+      `#!/bin/sh\ntouch "${claudeMarker}"\necho should-not-run\nexit 0\n`,
+    );
+    writeFileSync(
+      join(bin, "codex"),
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >> "${codexArgsLog}"`,
+        "case \"$*\" in",
+        "  *\"intent\"*) echo '{\"intent\":\"new_task\"}' ;;",
+        "  *) echo '{\"summary\":\"Codex fallback 研究摘要\"}' ;;",
+        "esac",
+      ].join("\n"),
+    );
+    chmodSync(join(bin, "claude"), 0o755);
+    chmodSync(join(bin, "codex"), 0o755);
+    const env = {
+      ACM_CLAUDE_REVIEW_DISABLED: "1",
+      PATH: bin,
+    };
+
+    const classifier = createDefaultBranchClassifier(root, env);
+    const researcher = createDefaultBranchResearcher(root, env);
+    const intent = classifier({
+      selectedText: "請建立新的 review 任務",
+      brief: "一段 Context Branch 簡介",
+      returnInstruction: "建立新任務",
+      source: {
+        taskId: "quick-1",
+        runId: "quick-1",
+        workspace: "w1",
+        tabId: "t1",
+        paneId: "p1",
+      },
+      taskRun: {
+        taskId: "quick-1",
+        runId: "quick-1",
+        firstmateSessionRef: "quick-1",
+        sourceLineageHash: "hash",
+        consumedLineageIntentIds: [],
+      },
+    });
+    const research = researcher({
+      selectedText: "需要理解 adapter 與 capsule 邊界",
+      brief: "一段 Context Branch 簡介",
+      source: {
+        taskId: "quick-1",
+        runId: "quick-1",
+        workspace: "w1",
+        tabId: "t1",
+        paneId: "p1",
+      },
+    });
+
+    expect(intent).toBe("new_task");
+    expect(research).toEqual({
+      summary: "Codex fallback 研究摘要",
+      evidence: ["codex:codex-session-default"],
+    });
+    expect(existsSync(claudeMarker)).toBe(false);
+    const codexArgs = readFileSync(codexArgsLog, "utf8");
+    expect(codexArgs).toContain("exec --ephemeral --sandbox read-only");
+    expect(codexArgs).toContain("只輸出 new_task 或 modify_task");
+    expect(codexArgs).toContain("請用繁體中文簡介");
   });
 });
