@@ -14,7 +14,11 @@ import {
   type RoutingDecision,
   type SourceLineage,
 } from "../contracts/index.ts";
-import { createQuickRun, type QuickResult } from "../quick.ts";
+import {
+  createQuickRun,
+  type QuickResult,
+  type QuickRunRecord,
+} from "../quick.ts";
 import {
   planStandardWorkflow,
   type NormalizedStandardInput,
@@ -85,6 +89,37 @@ export interface StandardRunOptions {
 export interface StandardRunResult {
   readonly ok: boolean;
   readonly record: StandardRunRecord;
+}
+
+type CompletedFirstmateAuthorRecord = QuickRunRecord & {
+  readonly status: "completed";
+  readonly result: NonNullable<QuickRunRecord["result"]>;
+  readonly worker: QuickRunRecord["worker"] & {
+    readonly target: string;
+  };
+  readonly evidence: NonNullable<QuickRunRecord["evidence"]> & {
+    readonly observedAt: string;
+  };
+  readonly recordPath: string;
+};
+
+export function hasFirstmateAuthorReadback(
+  record: QuickRunRecord,
+): record is CompletedFirstmateAuthorRecord {
+  return (
+    record.status === "completed"
+    && Boolean(record.result?.summary.trim())
+    && Boolean(record.result?.readBackAt)
+    && Boolean(record.worker.taskId)
+    && Boolean(record.worker.target)
+    && Boolean(record.recordPath)
+    && Boolean(record.evidence?.firstmateMeta)
+    && Boolean(record.evidence?.firstmateStatus)
+    && Boolean(record.evidence?.scoutReport)
+    && Boolean(record.evidence?.observedAt)
+    && record.claims.firstmatePrimaryInHerdr
+    && record.claims.workerVisible
+  );
 }
 
 interface ReviewDocument {
@@ -394,13 +429,7 @@ function defaultStandardRuntimePorts(options: {
       });
       if (
         !result.ok ||
-        result.record.result?.summary === undefined ||
-        result.record.worker.target === undefined ||
-        result.record.recordPath === undefined ||
-        !result.record.claims.firstmatePrimaryInHerdr ||
-        !result.record.claims.workerVisible ||
-        !result.record.claims.resultReturnedToPane ||
-        !result.record.claims.recordReadbackMatchesPane
+        !hasFirstmateAuthorReadback(result.record)
       ) {
         return {
           receipt: {

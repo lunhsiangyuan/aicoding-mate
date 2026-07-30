@@ -10,11 +10,13 @@ import type {
 } from "../src/contracts/index.ts";
 import {
   createStandardRun,
+  hasFirstmateAuthorReadback,
   markStandardRunPresented,
   readStandardRunRecord,
   renderStandardText,
   type StandardRuntimePorts,
 } from "../src/integration/standard-runtime.ts";
+import type { QuickRunRecord } from "../src/quick.ts";
 
 const availability: AvailabilitySnapshot = {
   id: "availability-runtime-1",
@@ -97,6 +99,70 @@ function successfulPorts(
 }
 
 describe("standard runtime integration", () => {
+  test("accepts durable Firstmate author read-back before the reviewed report reaches the pane", () => {
+    const record: QuickRunRecord = {
+      schemaVersion: 1,
+      id: "quick-author-1",
+      createdAt: "2026-07-30T15:00:00.000Z",
+      updatedAt: "2026-07-30T15:01:00.000Z",
+      task: "唯讀架構分析",
+      recipe: "quick",
+      status: "completed",
+      source: { paneId: "w1:p1" },
+      firstmateRoot: "/tmp/firstmate",
+      fmHome: "/tmp/fm-home",
+      herdr: {
+        backend: "herdr",
+        session: "default",
+        primaryPaneId: "w1:p1",
+      },
+      worker: {
+        taskId: "quick-author-1",
+        harness: "codex",
+        kind: "scout",
+        paneId: "w1:p2",
+        target: "default:w1:p2",
+      },
+      controlChannel: {
+        outbound: "fm-brief+fm-spawn",
+        inbound: "fm-peek+report",
+        sourcePaneId: "w1:p1",
+        workerTarget: "default:w1:p2",
+      },
+      result: {
+        summary: "Firstmate author report",
+        readBackAt: "2026-07-30T15:01:00.000Z",
+      },
+      blockers: [],
+      evidence: {
+        brief: "/tmp/brief.md",
+        firstmateMeta: "/tmp/quick-author-1.meta",
+        firstmateStatus: "/tmp/quick-author-1.status",
+        scoutReport: "/tmp/report.md",
+        herdrPaneId: "w1:p2",
+        observedAt: "2026-07-30T15:01:00.000Z",
+      },
+      claims: {
+        firstmatePrimaryInHerdr: true,
+        workerVisible: true,
+        resultReturnedToPane: false,
+        recordReadbackMatchesPane: false,
+      },
+      recordPath: "/tmp/quick-author-1.json",
+    };
+
+    expect(hasFirstmateAuthorReadback(record)).toBe(true);
+    expect(
+      hasFirstmateAuthorReadback({
+        ...record,
+        evidence: {
+          ...record.evidence!,
+          observedAt: undefined,
+        },
+      }),
+    ).toBe(false);
+  });
+
   test("dispatches author through Firstmate and produces reviewed two-layer report", async () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
     let observedRequest: FirstmateDispatchRequest | undefined;
