@@ -1,0 +1,53 @@
+version: 1
+
+actions:
+  read_only:
+    default: allow
+  reversible_local_change:
+    default: allow
+  task_mutation_from_context_branch:
+    default: allow_after_readback
+  tests_and_verification:
+    default: allow
+  model_fallback_within_capability_floor:
+    default: allow
+
+  external_action:
+    default: require_confirmation
+  paid_or_large_batch:
+    default: require_confirmation
+  sensitive_data:
+    default: require_confirmation
+  irreversible_action:
+    default: require_confirmation
+  permission_change:
+    default: require_confirmation
+
+risk_tiers:
+  low:
+    workflow: quick
+    adversarial_review: false
+  medium:
+    workflow: standard
+    adversarial_review: false
+  high:
+    workflow: adversarial
+    adversarial_review: true
+  critical:
+    workflow: adversarial
+    adversarial_review: true
+    fail_closed: true
+
+readback:
+  required_before:
+    - task_mutation_from_context_branch
+    - external_action
+    - paid_or_large_batch
+    - sensitive_data
+    - irreversible_action
+
+decision_registry:
+  mode: append_only
+  allow_supersede: true
+  require_source: true
+  require_scope: true

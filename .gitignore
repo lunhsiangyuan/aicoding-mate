@@ -1,0 +1,17 @@
+.DS_Store
+.env
+.env.*
+
+# Local user configuration and secrets
+config/local/
+secrets/
+
+# Runtime state and generated evidence
+state/
+runs/
+artifacts/
+
+# Tool caches
+.codex/
+.herdr/
+node_modules/

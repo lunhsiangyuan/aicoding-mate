@@ -1,0 +1,76 @@
+version: 1
+
+recipes:
+  quick:
+    use_when:
+      risk: low
+      scope: small
+    stages:
+      - classify
+      - execute
+      - verify
+      - coverage_review
+      - report
+    limits:
+      repair_rounds: 1
+
+  standard:
+    use_when:
+      risk:
+        - medium
+    stages:
+      - classify
+      - plan
+      - execute
+      - cross_family_review
+      - repair
+      - verify
+      - coverage_review
+      - report
+    limits:
+      repair_rounds: 2
+
+  adversarial:
+    use_when:
+      risk:
+        - high
+        - critical
+    stages:
+      - classify
+      - plan
+      - execute
+      - cross_family_review
+      - challenger
+      - author_response
+      - independent_judge
+      - repair
+      - verify
+      - coverage_review
+      - report
+    limits:
+      debate_rounds: 2
+      repair_rounds: 2
+
+  research:
+    use_when:
+      task_type: research
+    stages:
+      - define_denominator
+      - high_recall_discovery
+      - deduplicate
+      - verify_and_label
+      - adversarial_gap_check
+      - coverage_review
+      - compose_two_layer_report
+    limits:
+      discovery_expansions: 2
+      verification_rounds: 2
+
+global_barriers:
+  before_external_consequence:
+    - policy_check
+    - readback
+    - user_confirmation
+  before_report:
+    - verification_complete
+    - coverage_review_complete

@@ -1,0 +1,44 @@
+version: 1
+
+communication:
+  language: zh-TW
+  default_layer: main_report
+  main_report:
+    max_pages: 1
+    include:
+      - conclusion
+      - architecture
+      - impact
+      - next_action
+    exclude_unless_requested:
+      - raw_code
+      - raw_logs
+      - internal_paths
+      - full_model_debate
+  expandable_layers:
+    - evidence
+    - uncertainty
+    - technical_details
+
+autonomy:
+  reversible_technical_decisions: architect_decides
+  ask_user_only_for:
+    - external_action
+    - paid_or_large_batch
+    - sensitive_data
+    - irreversible_action
+    - product_tradeoff
+
+conversation:
+  ask_one_product_question_at_a_time: true
+  include_recommendation: true
+  explain_impact_in_plain_language: true
+  persist_answered_preferences: true
+
+reporting:
+  strategy: recall_first
+  uncertainty_expression: label_instead_of_delete
+  coverage_review: required
+  defensive_caveats:
+    main_report: material_only
+    evidence_layer: allowed

@@ -1,0 +1,62 @@
+version: 1
+
+upstreams:
+  firstmate:
+    repository: https://github.com/kunchenguid/firstmate
+    ref: e595611291247368b982eb729097c54f2b45aa78
+    integration: external_dependency
+    mode: architect
+  herdr:
+    repository: https://github.com/herdrdev/herdr
+    ref: v0.7.5
+    integration: runtime_backend
+
+adapters:
+  codex:
+    kind: app_server
+    capabilities:
+      - name: execute
+        target_phase: 3
+      - name: review
+        target_phase: 3
+      - name: fork_thread
+        target_phase: 4
+      - name: native_annotation_handoff
+        target_phase: 4
+    readiness: planned
+
+  claude:
+    kind: cli
+    capabilities:
+      - name: execute
+        target_phase: 3
+      - name: review
+        target_phase: 3
+    readiness: planned
+
+  cursor:
+    kind: cli
+    capabilities:
+      - name: execute
+        target_phase: post_v0_1
+      - name: review
+        target_phase: post_v0_1
+    readiness: requires_supervised_verification
+
+  gemini:
+    kind: cli_or_api
+    capabilities:
+      - name: research
+        target_phase: post_v0_1
+      - name: tie_break
+        target_phase: post_v0_1
+      - name: final_spot_check
+        target_phase: post_v0_1
+    readiness: requires_supervised_verification
+    quota_class: scarce
+
+registry_rules:
+  workers_may_dispatch_other_workers: false
+  architect_is_dispatch_authority: true
+  runtime_capability_probe_required: true
+  missing_adapter_behavior: use_configured_fallback
