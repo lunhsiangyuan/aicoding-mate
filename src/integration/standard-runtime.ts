@@ -299,7 +299,9 @@ export function probeStandardAvailability(
   const capturedAt = now();
   const codexAvailable =
     commandSucceeds("codex", ["login", "status"], cwd, env);
+  const claudeReviewDisabled = env.ACM_CLAUDE_REVIEW_DISABLED === "1";
   const claudeAvailable =
+    !claudeReviewDisabled &&
     commandSucceeds("claude", ["auth", "status"], cwd, env);
   const candidates: AvailabilityCandidate[] = [
     candidate(
@@ -333,6 +335,7 @@ export function probeStandardAvailability(
       env.ACM_CLAUDE_REVIEW_MODEL ?? "fable",
       "architecture",
       claudeAvailable,
+      claudeReviewDisabled ? "claude_review_disabled_by_env" : undefined,
     ),
   ];
   return {
@@ -687,6 +690,7 @@ function candidate(
   resolvedModel: string,
   capabilityTier: AvailabilityCandidate["capabilityTier"],
   available: boolean,
+  unavailableReason?: string,
 ): AvailabilityCandidate {
   return {
     alias,
@@ -695,7 +699,8 @@ function candidate(
     resolvedModel,
     capabilityTier,
     state: available ? "available" : "unavailable",
-    reason: available ? null : `${provider}_cli_or_auth_unavailable`,
+    reason:
+      available ? null : unavailableReason ?? `${provider}_cli_or_auth_unavailable`,
   };
 }
 

@@ -1,4 +1,10 @@
-import { mkdtempSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +18,7 @@ import {
   createStandardRun,
   hasFirstmateAuthorReadback,
   markStandardRunPresented,
+  probeStandardAvailability,
   readStandardRunRecord,
   renderStandardText,
   type StandardRuntimePorts,
@@ -198,6 +205,99 @@ describe("standard runtime integration", () => {
     expect(readStandardRunRecord(result.record.recordPath)?.id).toBe(
       result.record.id,
     );
+  });
+
+  test("env override disables Claude reviewer before probe and routes to degraded same-family fallback", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    const bin = join(root, "bin");
+    const claudeMarker = join(root, "claude-called");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
+    writeFileSync(
+      join(bin, "claude"),
+      `#!/bin/sh\ntouch "${claudeMarker}"\nexit 0\n`,
+    );
+    chmodSync(join(bin, "codex"), 0o755);
+    chmodSync(join(bin, "claude"), 0o755);
+
+    const env = {
+      ACM_CLAUDE_REVIEW_DISABLED: "1",
+      ACM_STATE_DIR: join(root, "state"),
+      HERDR_PANE_ID: "w1:p1",
+      HERDR_WORKSPACE_ID: "w1",
+      HERDR_TAB_ID: "w1:t1",
+      PATH: bin,
+    };
+    const probed = probeStandardAvailability(
+      root,
+      env,
+      () => "2026-07-30T15:00:00.000Z",
+    );
+    const anthropicReviewer = probed.candidates.find(
+      (candidate) => candidate.alias === "anthropic-reviewer",
+    );
+
+    expect(anthropicReviewer).toBeDefined();
+    if (anthropicReviewer === undefined) {
+      throw new Error("anthropic reviewer candidate missing");
+    }
+    expect(anthropicReviewer?.state).toBe("unavailable");
+    expect(anthropicReviewer?.reason).toBe("claude_review_disabled_by_env");
+    expect(existsSync(claudeMarker)).toBe(false);
+
+    const result = await createStandardRun({
+      task: "分析 Standard fallback",
+      cwd: root,
+      env,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports: {
+        async dispatchAuthor(request) {
+          return {
+            receipt: {
+              accepted: true,
+              idempotencyStatus: "accepted",
+              firstmateTaskId: "quick-author-1",
+              workerTarget: "w1:p2",
+              evidencePath: "/tmp/quick-author-1.json",
+              reason: null,
+            },
+            summary: `author=${request.routingDecision.diversityStatus}`,
+            quickRecordPath: "/tmp/quick-author-1.json",
+          };
+        },
+        async review(_prompt, assignment) {
+          expect(assignment.role).toBe("reviewer");
+          expect(assignment.family).toBe("openai");
+          return {
+            ok: true,
+            family: "openai",
+            model: assignment.resolvedModel,
+            rawOutput: JSON.stringify({
+              conclusion: "採用 same-family degraded fallback。",
+              impact: "Claude review 已由 explicit override 關閉，routing 在執行前保守降級。",
+              nextAction: "解除 override 後再恢復跨 family review。",
+              limitations: ["目前沒有使用 Anthropic reviewer。"],
+              unknowns: [],
+            }),
+            error: null,
+          };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.record.availability.candidates).toContainEqual(
+      anthropicReviewer,
+    );
+    expect(result.record.routingDecision?.diversityStatus).toBe(
+      "degraded_same_family",
+    );
+    expect(
+      result.record.routingDecision?.fallbackTrace.some(
+        (entry) => entry.reason === "degraded_same_family",
+      ),
+    ).toBe(true);
+    expect(result.record.review?.family).toBe("openai");
   });
 
   test("fails closed when reviewer output does not satisfy report contract", async () => {
