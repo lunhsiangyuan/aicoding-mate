@@ -1103,7 +1103,7 @@ function encodedArchitectureTask(task: string): string {
     "唯讀分析本地專案並回覆架構結論、影響與下一步，"
     + `請先理解這份 base64url 目標資料：${encoded}。`
     + "完成 gate 若要求的 named skill 未出現在本次 skill catalog，"
-    + "不要只因別名不可用而阻擋；請直接執行等價的唯讀 code review，"
+    + "不要只因別名不可用而阻擋；請改以等價的唯讀 code review 完成 gate，"
     + "並記錄至少三個 debugging hypotheses 及各自的 runtime evidence，"
     + "在報告中明確標示這項 portable fallback。"
   );
