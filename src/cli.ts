@@ -305,9 +305,14 @@ async function runStandardPaneCommand(
     io.stderr.write(`standard-pane 不支援額外參數: ${args.join(" ")}\n`);
     return 2;
   }
+  const reviewDescription = io.env.ACM_CLAUDE_REVIEW_DISABLED === "1"
+    ? "再由 Codex 進行顯式同家族降級 review"
+    : "再交給 Claude 獨立跨模型 review";
   io.stdout.write(
     "AI Coding Mate Standard\n"
-      + "請描述目標與邊界；系統會由 Firstmate/Codex 產出架構方案，再交給 Claude 獨立 review：\n> ",
+      + "請描述目標與邊界；系統會由 Firstmate/Codex 產出架構方案，"
+      + reviewDescription
+      + "：\n> ",
   );
   const task = (await askPaneLine()).trim();
   if (!task) {
