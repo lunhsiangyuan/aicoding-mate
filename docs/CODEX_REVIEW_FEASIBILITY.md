@@ -81,6 +81,12 @@ export type ReviewStartResponse = {
 
 generated schema 也顯示 `ThreadReadParams` 有 `includeTurns?: boolean`，`TurnStartParams` 需要 `threadId` 與 `input`，`ThreadStartParams` 可帶 `cwd`、`model`、`approvalPolicy`、`sandbox`、`serviceName` 等欄位。
 
+### Existing-thread deep-link probe
+
+Root integration review 另外以本 session 的既有 Codex task id 執行 macOS `open codex://threads/<existing-thread-id>`，command exit 0；Codex App 的同一 task navigation read-back 回傳 `navigated: true`。因此「canonical deep link 能打開一個已知存在的本機 task」已取得 runtime 證據。
+
+這不證明外部 app-server 新建的 detached review thread 一定會出現在 Desktop，也不證明該 thread 的原生 annotations 可匯出。那兩項仍維持 `UNVERIFIABLE`，留給後續 runtime ticket。
+
 ## 3. 官方 docs/source 證據
 
 ### OpenAI docs
@@ -108,7 +114,7 @@ generated schema 也顯示 `ThreadReadParams` 有 `includeTurns?: boolean`，`Tu
 | 能力 | 本輪狀態 | 可以主張什麼 | 不可主張什麼 |
 | --- | --- | --- | --- |
 | thread/review result read-back | `CONFIRMED_BY_DOCS_AND_SCHEMA`，runtime 往返 `UNVERIFIABLE` | app-server 有 `thread/read includeTurns`；`review/start` streams review items，完成時有 `exitedReviewMode.review` text；detached review 回 `reviewThreadId` | 不可主張本輪已實際建立 review thread 並讀回結果 |
-| Desktop deep link | `CONFIRMED_BY_DOCS`，本輪 runtime `UNVERIFIABLE` | `codex://threads/<thread-id>` 是官方 canonical link form | 不可主張它已在本機打開外部 app-server 剛建立的 review thread，也不可主張 Desktop/CLI version 一定一致 |
+| Desktop deep link | `CONFIRMED_FOR_EXISTING_THREAD`；外部新建 review thread 仍為 `UNVERIFIABLE` | `codex://threads/<thread-id>` 是官方 canonical link form，且本機已打開一個既有 task | 不可主張它已在本機打開外部 app-server 剛建立的 review thread，也不可主張 Desktop/CLI version 一定一致 |
 | user-authored inline annotation structured export | `UNVERIFIABLE_PUBLIC_EXPORT` | 官方 docs 證明 annotation UX 存在，可作為人工修訂入口 | 不可主張外部 plugin 可穩定讀出 structured file/line/user-comment annotations；必須 fallback 到 Review Capsule |
 
 ## 5. v0.1 建議整合路徑
