@@ -99,6 +99,7 @@ export function createHighIntensityCliPort(
           "text",
           "--mode",
           "ask",
+          "--trust",
           "--sandbox",
           "enabled",
           "--model",

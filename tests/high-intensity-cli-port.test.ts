@@ -139,6 +139,7 @@ describe("high-intensity CLI port", () => {
           "text",
           "--mode",
           "ask",
+          "--trust",
           "--sandbox",
           "enabled",
           "--model",
