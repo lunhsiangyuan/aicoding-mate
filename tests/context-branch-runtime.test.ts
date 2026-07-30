@@ -14,6 +14,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createDefaultBranchClassifier,
   createDefaultBranchResearcher,
+  contextBranchPaneEnvironment,
   readBranchSession,
   resolveFirstmateSourceBinding,
   startContextBranch,
@@ -285,5 +286,18 @@ describe("context branch runtime", () => {
     expect(codexArgs).toContain("exec --ephemeral --sandbox read-only");
     expect(codexArgs).toContain("只輸出 new_task 或 modify_task");
     expect(codexArgs).toContain("請用繁體中文簡介");
+  });
+
+  test("forwards explicit branch model policy into the Herdr child pane", () => {
+    expect(
+      contextBranchPaneEnvironment({
+        ACM_CLAUDE_REVIEW_DISABLED: "1",
+        ACM_CODEX_REVIEW_MODEL: "gpt-5.6-sol",
+      }),
+    ).toEqual([
+      "ACM_CLAUDE_REVIEW_DISABLED=1",
+      "ACM_CODEX_REVIEW_MODEL=gpt-5.6-sol",
+    ]);
+    expect(contextBranchPaneEnvironment({})).toEqual([]);
   });
 });

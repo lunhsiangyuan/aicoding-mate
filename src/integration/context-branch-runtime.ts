@@ -412,6 +412,7 @@ function defaultStartPorts(
     resolveSource: (focusedPaneId) =>
       resolveFirstmateSourceBinding(stateDir, focusedPaneId),
     openBranchPane(branchPath) {
+      const paneEnvironment = contextBranchPaneEnvironment(env);
       const result = run(
         env.HERDR_BIN_PATH || "herdr",
         [
@@ -426,6 +427,7 @@ function defaultStartPorts(
           "tab",
           "--env",
           `ACM_BRANCH_PATH=${branchPath}`,
+          ...paneEnvironment.flatMap((value) => ["--env", value]),
           "--focus",
         ],
         cwd,
@@ -441,6 +443,18 @@ function defaultStartPorts(
       };
     },
   };
+}
+
+export function contextBranchPaneEnvironment(
+  env: NodeJS.ProcessEnv,
+): readonly string[] {
+  const values: string[] = [];
+  if (env.ACM_CLAUDE_REVIEW_DISABLED === "1") {
+    values.push("ACM_CLAUDE_REVIEW_DISABLED=1");
+  }
+  const codexModel = env.ACM_CODEX_REVIEW_MODEL?.trim();
+  if (codexModel) values.push(`ACM_CODEX_REVIEW_MODEL=${codexModel}`);
+  return values;
 }
 
 function findBindingByRun(
