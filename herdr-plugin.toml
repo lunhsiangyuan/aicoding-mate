@@ -16,3 +16,9 @@ id = "doctor"
 title = "AI Coding Mate"
 placement = "tab"
 command = ["bun", "bin/aicoding-mate", "pane"]
+
+[[panes]]
+id = "quick"
+title = "AI Coding Mate Quick"
+placement = "tab"
+command = ["bun", "bin/aicoding-mate", "quick-pane"]

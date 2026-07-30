@@ -2,7 +2,7 @@
 
 AI Coding Mate 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目標、優先順序與不能碰的邊界；系統負責把技術工作交給 Firstmate、Herdr 與不同模型，並把結果整理成能直接閱讀的報告。
 
-> 目前狀態：v0.1 規格已確認；T1 已提供 Herdr 可開啟的 runtime doctor 入口。這個入口只診斷 Herdr、Firstmate、Codex、Claude、git、gh、jq 與 Bun 狀態，不宣稱 Firstmate workflow 已接通。
+> 目前狀態：v0.1 規格已確認；T1 提供 Herdr runtime doctor，T2 提供可從 Herdr 派出真實 Firstmate Codex worker 的 Quick workflow。
 
 ## 它要解決什麼
 
@@ -84,6 +84,30 @@ bun bin/aicoding-mate doctor --json
 ```
 
 doctor 的每個項目都來自 runtime read-back：Herdr 會讀 `herdr status server` 與 `herdr api snapshot`，其他工具會執行各自的 `--version`。缺少工具時，輸出會列出可執行的下一步。Herdr plugin pane 使用 `herdr-plugin.toml` 中的 argv command；Herdr 不做 shell expansion，因此 pane entrypoint 只依賴 plugin runtime 的工作目錄與 `HERDR_PLUGIN_*` 環境變數。
+
+## T2：從 Herdr 派出 Firstmate Quick 任務
+
+先建立 pinned、pristine 的 Firstmate distro 與隔離 `FM_HOME`，再從 Herdr 開啟 Quick pane：
+
+```bash
+bun bin/aicoding-mate bootstrap-firstmate
+bun bin/aicoding-mate open --entrypoint quick
+```
+
+Quick pane 只接受明確唯讀的檢查、搜尋、摘要、解釋或 review 任務；其他意圖會在派工前導向正式 workflow。控制通道明確分成兩個方向：
+
+- Herdr pane 到 Firstmate：`fm-brief.sh` 寫入本次 task，`fm-spawn.sh` 建立隔離 worktree 與 Codex worker。
+- Firstmate 回到 Herdr pane：`fm-peek.sh`、status 與 report 形成結果；CLI 輸出後再用 `herdr pane read` 從來源 pane 讀回同一內容。
+
+AI Coding Mate 不修改 pinned Firstmate clone；它以 app-owned PATH adapter 把 Firstmate 的 Codex worker 從 upstream 的 full-access launch 收斂為 `workspace-write`、無 approval prompt、command network 關閉。可寫範圍只包含 Treehouse 隔離 worktree 與本次 `FM_HOME` report/status，並停用 web search 與 MCP server 設定。
+
+每次 run 會留下 JSON record，記錄 task、source pane、worker pane、control channel、evidence paths、狀態與結果。只有來源 pane 仍存在、worker pane 可見、worker 位於獨立 git worktree，而且來源 pane runtime read-back 與 durable result 一致時，四項 claims 才全部為 `true`：
+
+```bash
+bun bin/aicoding-mate read-run state/aicoding-mate/runs/<run-id>.json
+```
+
+若 bootstrap 或 spawn 失敗，先依 pane 中的 blocker 修正，再執行 `bootstrap-firstmate` 並從新的 Quick pane 重試；系統不會把缺少登入、工具、pane、隔離 worktree 或 read-back 的情況包裝成成功。
 
 安裝或 link Herdr plugin 代表在本機以使用者權限執行此 repository 的程式碼；請先檢查 `herdr-plugin.toml`、`bin/aicoding-mate` 與 `src/`。
 
