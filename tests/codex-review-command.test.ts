@@ -1,0 +1,398 @@
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { describe, expect, test } from "bun:test";
+
+import { sourceLineageHash } from "../src/contracts/index.ts";
+import {
+  runCodexReviewFromHerdrSelection,
+  type CodexReviewDesktopLaunchRequest,
+  type DisposableCodexReviewPort,
+} from "../src/integration/codex-review-command.ts";
+import type { CodexAppServerRuntimeOptions } from "../src/integration/codex-review-runtime.ts";
+import type {
+  CodexReviewReadback,
+  CodexReviewStartRequest,
+} from "../src/review/index.ts";
+
+function invocation(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    selected_text: "Review this adapter source.",
+    workspace_label: "workspace-1",
+    tab_label: "tab-1",
+    focused_pane_id: "pane-1",
+    ...overrides,
+  });
+}
+
+describe("Codex review command bridge", () => {
+  test("resolves a Herdr selection, persists the capsule, and requests an unverified desktop launch", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
+    const stateDir = join(root, "state", "aicoding-mate");
+    writeRunRecord(stateDir);
+    const captured: {
+      appServerOptions: CodexAppServerRuntimeOptions | null;
+      startRequest: CodexReviewStartRequest | null;
+      launchRequest: CodexReviewDesktopLaunchRequest | null;
+    } = {
+      appServerOptions: null,
+      startRequest: null,
+      launchRequest: null,
+    };
+    let disposed = false;
+
+    const result = await runCodexReviewFromHerdrSelection({
+      contextJson: invocation(),
+      cwd: root,
+      env: {},
+      now: () => "2026-07-30T21:00:00.000Z",
+      ports: {
+        createAppServerReviewPort(options) {
+          captured.appServerOptions = options;
+          return fakeReviewPort({
+            onStart(request) {
+              captured.startRequest = request;
+            },
+            onDispose() {
+              disposed = true;
+            },
+          });
+        },
+        async launchDesktop(request) {
+          captured.launchRequest = request;
+          return { requested: true, reason: null };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    const capturedOptions = requireValue(
+      captured.appServerOptions,
+      "appServerOptions",
+    );
+    expect(capturedOptions.cwd).toBe(root);
+    expect(capturedOptions.env).toEqual({});
+    expect(capturedOptions.model).toBe("gpt-5.6-sol");
+    expect(capturedOptions.threadConfig).toEqual({
+      web_search: "disabled",
+      mcp_servers: {},
+      model_reasoning_effort: "high",
+    });
+    expect(capturedOptions.timeoutMs).toBe(600_000);
+    expect(typeof capturedOptions.now).toBe("function");
+    const capturedStart = requireValue(captured.startRequest, "startRequest");
+    expect(capturedStart.source).toEqual({
+      taskId: "task-1",
+      runId: "run-1",
+      firstmateSessionRef: "task-1",
+      lineage: {
+        taskId: "task-1",
+        runId: "run-1",
+        workspace: "workspace-1",
+        tabId: "tab-1",
+        paneId: "pane-1",
+      },
+    });
+    expect(capturedStart.selection).toEqual({
+      selectedText: "Review this adapter source.",
+      sourceArtifact: "herdr-selection",
+      file: null,
+      startLine: null,
+      endLine: null,
+    });
+    expect(capturedStart.target).toEqual({
+      type: "custom",
+      instructions: "Review the selected Herdr context.",
+    });
+    expect(result.capsulePath).toBe(
+      join(stateDir, "codex-reviews", `${result.capsule.capsuleId}.json`),
+    );
+    expect(existsSync(result.capsulePath)).toBe(true);
+    expect(readJsonObject(result.capsulePath).codex).toEqual(
+      result.capsule.codex,
+    );
+    expect(result.desktopLaunch).toEqual({
+      status: "requested_unverified",
+      url: "codex://threads/thread-review-1",
+      reason: null,
+    });
+    expect(requireValue(captured.launchRequest, "launchRequest")).toEqual({
+      url: "codex://threads/thread-review-1",
+      reviewThreadId: "thread-review-1",
+      cwd: root,
+      env: {},
+    });
+    expect(disposed).toBe(true);
+  });
+
+  test("forwards upstream-decided env policy without choosing workflow or model itself", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
+    const stateDir = join(root, "custom-state");
+    writeRunRecord(stateDir);
+    const captured: {
+      appServerOptions: CodexAppServerRuntimeOptions | null;
+    } = { appServerOptions: null };
+
+    const env = {
+      ACM_STATE_DIR: stateDir,
+      ACM_CODEX_REVIEW_MODEL: "gpt-5.5",
+      ACM_CODEX_REVIEW_REASONING_EFFORT: "medium",
+      ACM_CODEX_REVIEW_TIMEOUT_MS: "1234",
+      ACM_CODEX_APP_SERVER_COMMAND: "/tmp/codex",
+      ACM_CODEX_APP_SERVER_ARGS: "app-server --stdio",
+    };
+    const result = await runCodexReviewFromHerdrSelection({
+      contextJson: invocation(),
+      cwd: root,
+      env,
+      ports: {
+        createAppServerReviewPort(options) {
+          captured.appServerOptions = options;
+          return fakeReviewPort();
+        },
+        launchDesktop: () => ({ requested: true, reason: null }),
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(requireValue(captured.appServerOptions, "appServerOptions")).toEqual({
+      cwd: root,
+      env,
+      model: "gpt-5.5",
+      threadConfig: {
+        web_search: "disabled",
+        mcp_servers: {},
+        model_reasoning_effort: "medium",
+      },
+      timeoutMs: 1234,
+      now: undefined,
+      command: "/tmp/codex",
+      args: ["app-server", "--stdio"],
+    });
+  });
+
+  test("fails closed before app-server when selection is malformed or source binding is missing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
+    let created = 0;
+    const malformed = await runCodexReviewFromHerdrSelection({
+      contextJson: invocation({ selected_text: "" }),
+      cwd: root,
+      env: {},
+      ports: {
+        createAppServerReviewPort() {
+          created += 1;
+          return fakeReviewPort();
+        },
+      },
+    });
+    const missingSource = await runCodexReviewFromHerdrSelection({
+      contextJson: invocation(),
+      cwd: root,
+      env: {},
+      ports: {
+        createAppServerReviewPort() {
+          created += 1;
+          return fakeReviewPort();
+        },
+      },
+    });
+
+    expect(malformed).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "selection_empty",
+    });
+    expect(missingSource).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "firstmate_source_run_not_found",
+    });
+    expect(created).toBe(0);
+  });
+
+  test("fails closed without persistence or desktop launch when capsule verification fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
+    const stateDir = join(root, "state", "aicoding-mate");
+    writeRunRecord(stateDir);
+    let launched = false;
+    let disposed = false;
+
+    const result = await runCodexReviewFromHerdrSelection({
+      contextJson: invocation(),
+      cwd: root,
+      env: {},
+      ports: {
+        createAppServerReviewPort() {
+          return fakeReviewPort({
+            readback: {
+              ok: true,
+              threadId: "thread-review-1",
+              sourceThreadId: "thread-source-1",
+              sourceLineageHash: "wrong-lineage",
+              summary: "Review completed.",
+              decision: null,
+              rawReviewText: "Review completed.",
+              annotations: [],
+              nativeAnnotationExport: "unverifiable",
+              eventIds: ["turn-review-1"],
+              completedAt: "2026-07-30T21:01:00.000Z",
+            },
+            onDispose() {
+              disposed = true;
+            },
+          });
+        },
+        launchDesktop() {
+          launched = true;
+          return { requested: true, reason: null };
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "source_lineage_mismatch",
+    });
+    expect(existsSync(join(stateDir, "codex-reviews"))).toBe(false);
+    expect(launched).toBe(false);
+    expect(disposed).toBe(true);
+  });
+
+  test("keeps completed review success separate from an unverified desktop request failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
+    writeRunRecord(join(root, "state", "aicoding-mate"));
+
+    const result = await runCodexReviewFromHerdrSelection({
+      contextJson: invocation(),
+      cwd: root,
+      env: {},
+      ports: {
+        createAppServerReviewPort: () => fakeReviewPort(),
+        launchDesktop: () => ({
+          requested: false,
+          reason: "open exited 1",
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.desktopLaunch).toEqual({
+      status: "request_failed",
+      url: "codex://threads/thread-review-1",
+      reason: "open exited 1",
+    });
+    expect(existsSync(result.capsulePath)).toBe(true);
+  });
+});
+
+function fakeReviewPort(options: {
+  readonly onStart?: (request: CodexReviewStartRequest) => void;
+  readonly onDispose?: () => void;
+  readonly readback?: CodexReviewReadback;
+} = {}): DisposableCodexReviewPort {
+  let startRequest: CodexReviewStartRequest | null = null;
+  return {
+    async startReview(request) {
+      startRequest = request;
+      options.onStart?.(request);
+      return {
+        sourceThreadId: "thread-source-1",
+        reviewThreadId: "thread-review-1",
+        delivery: "detached",
+        turnId: "turn-review-1",
+        eventIds: ["turn-review-1"],
+      };
+    },
+    async readReviewThread() {
+      if (options.readback !== undefined) return options.readback;
+      if (startRequest === null) throw new Error("start_missing");
+      return {
+        ok: true,
+        threadId: "thread-review-1",
+        sourceThreadId: "thread-source-1",
+        sourceLineageHash: sourceLineageHash(startRequest.source.lineage),
+        summary: "src/example.ts:12 changes requested",
+        decision: "changes_requested",
+        rawReviewText: "src/example.ts:12 changes requested",
+        annotations: [
+          {
+            file: "src/example.ts",
+            line: 12,
+            endLine: 12,
+            body: "Risk found.",
+            source: "codex_review_text",
+          },
+        ],
+        nativeAnnotationExport: "unverifiable",
+        eventIds: ["turn-review-1"],
+        completedAt: "2026-07-30T21:01:00.000Z",
+      };
+    },
+    async dispose() {
+      options.onDispose?.();
+    },
+  };
+}
+
+function writeRunRecord(stateDir: string): void {
+  const runsDir = join(stateDir, "runs");
+  mkdirSync(runsDir, { recursive: true });
+  const recordPath = join(runsDir, "run-1.json");
+  writeFileSync(
+    recordPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      recipe: "quick",
+      id: "run-1",
+      createdAt: "2026-07-30T20:00:00.000Z",
+      updatedAt: "2026-07-30T20:00:00.000Z",
+      task: "Review source",
+      status: "completed",
+      source: { paneId: "pane-1" },
+      firstmateRoot: "/tmp/firstmate",
+      fmHome: "/tmp/fm-home",
+      herdr: { backend: "herdr", session: "default" },
+      worker: {
+        taskId: "task-1",
+        harness: "codex",
+        kind: "scout",
+        target: "pane-2",
+      },
+      controlChannel: {
+        outbound: "fm-brief+fm-spawn",
+        inbound: "fm-peek+report",
+      },
+      blockers: [],
+      claims: {
+        firstmatePrimaryInHerdr: true,
+        workerVisible: true,
+        resultReturnedToPane: true,
+        recordReadbackMatchesPane: true,
+      },
+      recordPath,
+    }),
+  );
+}
+
+function readJsonObject(path: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("json_not_object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function requireValue<T>(value: T | null, label: string): T {
+  if (value === null) throw new Error(`${label}_missing`);
+  return value;
+}

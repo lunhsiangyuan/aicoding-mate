@@ -35,6 +35,15 @@ import {
   startContextBranch,
   writeBranchSession,
 } from "./integration/context-branch-runtime.ts";
+import {
+  createHighIntensityCliPort,
+  probeHighIntensityCliAvailability,
+} from "./integration/high-intensity-cli-port.ts";
+import {
+  createHighIntensityRun,
+  readHighIntensityRunRecord,
+} from "./integration/high-intensity-runtime.ts";
+import { runCodexReviewFromHerdrSelection } from "./integration/codex-review-command.ts";
 
 export interface CliIO {
   cwd: string;
@@ -66,8 +75,20 @@ export async function main(args: string[], io: CliIO): Promise<number> {
         return await runStandardCommand(args.slice(1), io);
       case "standard-pane":
         return await runStandardPaneCommand(args.slice(1), io);
+      case "adversarial":
+      case "research":
+        return await runHighIntensityCommand(command, args.slice(1), io);
+      case "adversarial-pane":
+      case "research-pane":
+        return await runHighIntensityPaneCommand(
+          command === "adversarial-pane" ? "adversarial" : "research",
+          args.slice(1),
+          io,
+        );
       case "context-branch-start":
         return runContextBranchStartCommand(args.slice(1), io);
+      case "codex-review-start":
+        return await runCodexReviewStartCommand(args.slice(1), io);
       case "context-branch-pane":
         return await runContextBranchPaneCommand(args.slice(1), io);
       case "bootstrap-firstmate":
@@ -88,6 +109,40 @@ export async function main(args: string[], io: CliIO): Promise<number> {
     io.stderr.write(`執行失敗: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+async function runCodexReviewStartCommand(
+  args: string[],
+  io: CliIO,
+): Promise<number> {
+  if (args.length > 0) {
+    io.stderr.write(
+      `codex-review-start 不支援額外參數: ${args.join(" ")}\n`,
+    );
+    return 2;
+  }
+  const contextJson = io.env.HERDR_PLUGIN_CONTEXT_JSON;
+  if (!contextJson) {
+    io.stderr.write("Codex Review 必須從 Herdr 的選取文字 action 啟動。\n");
+    return 1;
+  }
+  const result = await runCodexReviewFromHerdrSelection({
+    contextJson,
+    cwd: io.cwd,
+    env: io.env,
+  });
+  if (!result.ok) {
+    io.stderr.write(`Codex Review 未建立: ${result.reason}\n`);
+    return 1;
+  }
+  io.stdout.write(
+    "Codex native review 已完成並寫入 Review Capsule。\n"
+      + `review task: ${result.capsule.codex.reviewThreadId}\n`
+      + `capsule: ${result.capsulePath}\n`
+      + `Codex UI: ${result.desktopLaunch.status}\n`
+      + `deep link: ${result.desktopLaunch.url}\n`,
+  );
+  return 0;
 }
 
 function runContextBranchStartCommand(args: string[], io: CliIO): number {
@@ -329,6 +384,150 @@ async function runStandardPaneCommand(
   return exitCode;
 }
 
+type HighIntensityRecipe = "adversarial" | "research";
+
+const defaultHighIntensityQuestions = [
+  "哪些需求與限制已被確認？",
+  "哪些內容仍只是候選、推論或未知？",
+  "有哪些反例、遺漏或錯誤前提會改變決策？",
+  "建議的架構決策與下一步是什麼？",
+] as const;
+
+async function runHighIntensityCommand(
+  recipe: HighIntensityRecipe,
+  args: string[],
+  io: CliIO,
+): Promise<number> {
+  const parsed = parseHighIntensityInput(recipe, args, io);
+  if (!parsed.ok) return 2;
+  const availability = probeHighIntensityCliAvailability({
+    cwd: parsed.projectDir,
+    env: io.env,
+  });
+  const result = await createHighIntensityRun({
+    input: {
+      task: parsed.task,
+      subquestions: parsed.questions,
+      configVersionHash: `${recipe}-v0.1`,
+    },
+    availability,
+    stateDir: stateDir(io),
+    modelPort: createHighIntensityCliPort({
+      cwd: parsed.projectDir,
+      env: io.env,
+    }),
+  });
+  const readBack = readHighIntensityRunRecord(result.record.recordPath);
+  if (!result.ok || readBack === undefined || readBack.status !== "completed") {
+    io.stdout.write(
+      `BLOCKED: ${result.record.blockers.join("; ") || "durable_readback_failed"}\n`
+        + `evidence: ${result.record.recordPath}\n`,
+    );
+    return 1;
+  }
+  const report = readBack.report;
+  if (report === null) {
+    io.stdout.write(
+      `BLOCKED: decision_ready_report_missing\n`
+        + `evidence: ${readBack.recordPath}\n`,
+    );
+    return 1;
+  }
+  io.stdout.write(
+    `${recipe === "adversarial" ? "對抗式架構審查" : "Recall-first 研究"}\n\n`
+      + `結論：${report.mainReport.conclusion}\n`
+      + `影響：${report.mainReport.impact}\n`
+      + `下一步：${report.mainReport.nextAction}\n\n`
+      + `證據層：${readBack.recordPath}\n`,
+  );
+  return 0;
+}
+
+async function runHighIntensityPaneCommand(
+  recipe: HighIntensityRecipe,
+  args: string[],
+  io: CliIO,
+): Promise<number> {
+  if (args.length > 0) {
+    io.stderr.write(`${recipe}-pane 不支援額外參數: ${args.join(" ")}\n`);
+    return 2;
+  }
+  io.stdout.write(
+    `${recipe === "adversarial" ? "AI Coding Mate Adversarial" : "AI Coding Mate Research"}\n`
+      + "請用自然語言描述你要做的架構判斷；技術子問題由 Firstmate 自動整理：\n> ",
+  );
+  const task = (await askPaneLine()).trim();
+  if (!task) {
+    io.stderr.write("任務不可為空。\n");
+    return 2;
+  }
+  const exitCode = await runHighIntensityCommand(recipe, ["--task", task], io);
+  if (io.env.HERDR_ENV === "1" && io.env.ACM_PANE_ONCE !== "1") {
+    io.stdout.write(
+      "\n報告已留在 pane；完整證據與模型辯論可由 evidence 路徑展開。關閉 pane 即可離開。\n",
+    );
+    await keepPaneOpen();
+  }
+  return exitCode;
+}
+
+function parseHighIntensityInput(
+  recipe: HighIntensityRecipe,
+  args: string[],
+  io: CliIO,
+):
+  | {
+      readonly ok: true;
+      readonly task: string;
+      readonly projectDir: string;
+      readonly questions: readonly string[];
+    }
+  | { readonly ok: false } {
+  let projectDir = io.cwd;
+  const taskParts: string[] = [];
+  const questions: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--task" || arg === "--question" || arg === "--project") {
+      const value = args[index + 1];
+      if (!value) {
+        io.stderr.write(`${recipe} 的 ${arg} 需要值。\n`);
+        return { ok: false };
+      }
+      if (arg === "--task") taskParts.push(value);
+      if (arg === "--question") questions.push(value.trim());
+      if (arg === "--project") projectDir = resolve(io.cwd, value);
+      index += 1;
+    } else if (arg.startsWith("--")) {
+      io.stderr.write(`${recipe} 不支援的參數: ${arg}\n`);
+      return { ok: false };
+    } else {
+      taskParts.push(arg);
+    }
+  }
+  const task = taskParts.join(" ").trim();
+  if (!task) {
+    io.stderr.write(`${recipe} 需要任務文字。\n`);
+    return { ok: false };
+  }
+  const selectedQuestions = questions.filter((question) => question.length > 0);
+  return {
+    ok: true,
+    task,
+    projectDir,
+    questions:
+      selectedQuestions.length > 0
+        ? selectedQuestions
+        : defaultHighIntensityQuestions,
+  };
+}
+
+function stateDir(io: CliIO): string {
+  return io.env.ACM_STATE_DIR
+    ? resolve(io.cwd, io.env.ACM_STATE_DIR)
+    : resolve(io.cwd, "state", "aicoding-mate");
+}
+
 async function runQuickCommand(args: string[], io: CliIO): Promise<number> {
   const parsed = parseTaskAndProject("quick", args, io);
   if (!parsed.ok) return 2;
@@ -552,10 +751,17 @@ function runOpenCommand(args: string[], io: CliIO): number {
       const value = args[index + 1];
       if (
         !value ||
-        !["doctor", "quick", "standard", "context-branch"].includes(value)
+        ![
+          "doctor",
+          "quick",
+          "standard",
+          "adversarial",
+          "research",
+          "context-branch",
+        ].includes(value)
       ) {
         io.stderr.write(
-          "open 的 --entrypoint 必須是 doctor|quick|standard|context-branch。\n",
+          "open 的 --entrypoint 必須是 doctor|quick|standard|adversarial|research|context-branch。\n",
         );
         return 2;
       }
@@ -608,12 +814,15 @@ function helpText(): string {
 用法:
   aicoding-mate install
   aicoding-mate link [--disabled]
-  aicoding-mate open [--entrypoint doctor|quick|standard|context-branch] [--placement overlay|popup|split|tab|zoomed] [--no-focus]
+  aicoding-mate open [--entrypoint doctor|quick|standard|adversarial|research|context-branch] [--placement overlay|popup|split|tab|zoomed] [--no-focus]
   aicoding-mate doctor [--json]
   aicoding-mate bootstrap-firstmate
   aicoding-mate quick --task "小型任務" [--project <git-root>]
   aicoding-mate standard --task "架構目標" [--project <git-root>]
+  aicoding-mate adversarial --task "高風險架構判斷" [--question "子問題"] [--project <git-root>]
+  aicoding-mate research --task "Recall-first 研究目標" [--question "子問題"] [--project <git-root>]
   aicoding-mate context-branch-start
+  aicoding-mate codex-review-start
   aicoding-mate read-run <record.json>
   aicoding-mate pane
 
@@ -625,7 +834,10 @@ function helpText(): string {
   bootstrap-firstmate 取得 pinned Firstmate distro 並建立隔離 FM_HOME。
   quick    啟動 Firstmate-on-Herdr Quick run；四項 read-back 缺一就 fail closed。
   standard 由 Firstmate/Codex 產出架構方案，再由 Claude 跨 family review。
+  adversarial 由 Author、Challenger 與獨立 Judge 進行最多兩輪對抗式審查。
+  research 保留 discovery 分母、成熟度與 coverage，再交由跨模型 Judge 裁決。
   context-branch-start 從 Herdr 選取內容建立同 lineage 分支，複誦確認後送回來源任務。
+  codex-review-start 從 Herdr 選取內容建立 detached Codex review；UI request 與 review 完成狀態分開回報。
   read-run 重新讀取 durable run record 並檢查 pane/result 一致性。
   pane     Herdr plugin pane entrypoint，輸出可讀診斷面。
 `;

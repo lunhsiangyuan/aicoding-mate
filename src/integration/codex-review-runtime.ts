@@ -19,6 +19,8 @@ export interface CodexAppServerRuntimeOptions {
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly model?: string;
+  readonly threadConfig?: Readonly<Record<string, unknown>>;
   readonly timeoutMs?: number;
   readonly now?: () => string;
 }
@@ -154,6 +156,8 @@ class CodexAppServerRuntime implements CodexAppServerReviewPort {
   private readonly args: readonly string[];
   private readonly cwd: string;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly model: string | null;
+  private readonly threadConfig: Readonly<Record<string, unknown>> | null;
   private readonly timeoutMs: number;
   private readonly now: () => string;
   private readonly sessions = new Map<string, ReviewSession>();
@@ -165,6 +169,8 @@ class CodexAppServerRuntime implements CodexAppServerReviewPort {
     this.args = options.args ?? ["app-server", "--stdio"];
     this.cwd = options.cwd ?? process.cwd();
     this.env = { ...process.env, ...options.env };
+    this.model = nonEmptyOption(options.model);
+    this.threadConfig = options.threadConfig ?? null;
     this.timeoutMs = options.timeoutMs ?? 120_000;
     this.now = options.now ?? (() => new Date().toISOString());
   }
@@ -181,6 +187,8 @@ class CodexAppServerRuntime implements CodexAppServerReviewPort {
       approvalPolicy: "never",
       sandbox: "read-only",
       serviceName: "aicoding-mate",
+      ...(this.model === null ? {} : { model: this.model }),
+      ...(this.threadConfig === null ? {} : { config: this.threadConfig }),
     });
     const sourceThreadId = threadIdFromResult(sourceResult);
     assertStableThreadId(sourceThreadId, "bad_source_thread_id");
@@ -682,6 +690,11 @@ function firstNonEmpty(values: readonly (string | null | undefined)[]): string |
     }
   }
   return null;
+}
+
+function nonEmptyOption(value: string | undefined): string | null {
+  const normalized = value?.trim() ?? "";
+  return normalized.length === 0 ? null : normalized;
 }
 
 function propertyString(value: unknown, key: string): string | null {

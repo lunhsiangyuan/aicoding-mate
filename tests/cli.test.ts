@@ -23,7 +23,10 @@ describe("cli", () => {
     expect(buffer.stdout).toContain("用法");
     expect(buffer.stdout).toContain("doctor");
     expect(buffer.stdout).toContain("standard");
+    expect(buffer.stdout).toContain("adversarial");
+    expect(buffer.stdout).toContain("research");
     expect(buffer.stdout).toContain("context-branch-start");
+    expect(buffer.stdout).toContain("codex-review-start");
   });
 
   test("unknown command is a bad input with help", async () => {
@@ -73,5 +76,36 @@ describe("cli", () => {
 
     expect(code).toBe(1);
     expect(buffer.stderr).toContain("選取文字 action");
+  });
+
+  test("Codex review start requires a Herdr selection context", async () => {
+    const buffer = new BufferIO();
+    const code = await main(
+      ["codex-review-start"],
+      buffer.io({ PATH: process.env.PATH }),
+    );
+
+    expect(code).toBe(1);
+    expect(buffer.stderr).toContain("選取文字 action");
+  });
+
+  test("high-intensity command fails closed before model calls when agent is unavailable", async () => {
+    const buffer = new BufferIO();
+    const code = await main(
+      ["adversarial", "--task", "判斷控制平面邊界"],
+      buffer.io({ PATH: "" }),
+    );
+
+    expect(code).toBe(1);
+    expect(buffer.stdout).toContain("BLOCKED");
+    expect(buffer.stdout).toContain("evidence:");
+  });
+
+  test("high-intensity command rejects a missing task", async () => {
+    const buffer = new BufferIO();
+    const code = await main(["research"], buffer.io());
+
+    expect(code).toBe(2);
+    expect(buffer.stderr).toContain("需要任務文字");
   });
 });

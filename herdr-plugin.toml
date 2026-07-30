@@ -17,6 +17,12 @@ title = "用 AI Coding Mate 深入了解選取內容"
 contexts = ["selection"]
 command = ["bun", "bin/aicoding-mate", "context-branch-start"]
 
+[[actions]]
+id = "codex-review"
+title = "Open in Codex Review"
+contexts = ["selection"]
+command = ["bun", "bin/aicoding-mate", "codex-review-start"]
+
 [[panes]]
 id = "doctor"
 title = "AI Coding Mate"
@@ -34,6 +40,18 @@ id = "standard"
 title = "AI Coding Mate Standard"
 placement = "tab"
 command = ["bun", "bin/aicoding-mate", "standard-pane"]
+
+[[panes]]
+id = "adversarial"
+title = "AI Coding Mate Adversarial"
+placement = "tab"
+command = ["bun", "bin/aicoding-mate", "adversarial-pane"]
+
+[[panes]]
+id = "research"
+title = "AI Coding Mate Research"
+placement = "tab"
+command = ["bun", "bin/aicoding-mate", "research-pane"]
 
 [[panes]]
 id = "context-branch"

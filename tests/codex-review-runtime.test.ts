@@ -184,6 +184,45 @@ describe("Codex app-server review runtime", () => {
     }
   });
 
+  test("forwards an already-decided model and public thread config without routing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-codex-runtime-"));
+    const logPath = join(root, "requests.jsonl");
+    const port = createCodexAppServerReviewPort({
+      command: process.execPath,
+      args: [fakeAppServer(root, "configured", logPath)],
+      cwd: root,
+      model: "gpt-5.6-sol",
+      threadConfig: {
+        web_search: "disabled",
+        mcp_servers: {},
+        model_reasoning_effort: "high",
+      },
+      timeoutMs: 1_000,
+    });
+
+    try {
+      await port.startReview(request);
+      const calls = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(calls[2].params).toEqual({
+        cwd: root,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        serviceName: "aicoding-mate",
+        model: "gpt-5.6-sol",
+        config: {
+          web_search: "disabled",
+          mcp_servers: {},
+          model_reasoning_effort: "high",
+        },
+      });
+    } finally {
+      await port.dispose();
+    }
+  });
+
   test("fails closed on bad app-server ids and JSON-RPC errors", async () => {
     const badRoot = mkdtempSync(join(tmpdir(), "aicoding-mate-codex-runtime-"));
     const badPort = createCodexAppServerReviewPort({
@@ -341,7 +380,8 @@ function fakeAppServer(
     | "response-thread-id-only"
     | "top-level-turn-id-only"
     | "wrong-turn"
-    | "assistant-only",
+    | "assistant-only"
+    | "configured",
   logPath: string,
 ): string {
   mkdirSync(root, { recursive: true });
@@ -379,7 +419,8 @@ function fakeAppServer(
       "  }",
       "  if (message.method === 'initialized') return;",
       "  if (message.method === 'thread/start') {",
-      "    if (!expectParamKeys(message, 'approvalPolicy,cwd,sandbox,serviceName')) return;",
+      "    const expectedThreadKeys = mode === 'configured' ? 'approvalPolicy,config,cwd,model,sandbox,serviceName' : 'approvalPolicy,cwd,sandbox,serviceName';",
+      "    if (!expectParamKeys(message, expectedThreadKeys)) return;",
       "    if (message.params.sandbox !== 'read-only') { send({ jsonrpc: '2.0', id: message.id, error: { code: -32602, message: 'bad sandbox' } }); return; }",
       "    send({ jsonrpc: '2.0', id: message.id, result: { thread: { id: 'thread-source-1' } } });",
       "    return;",
