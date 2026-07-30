@@ -110,7 +110,13 @@ export function createHighIntensityCliPort(
         ],
         {
           cwd: options.cwd,
-          env,
+          env: {
+            ...env,
+            ACM_IDEMPOTENCY_KEY: request.idempotencyKey,
+            ACM_WORKFLOW_DECISION_ID: request.workflowDecisionId,
+            ACM_DECISION_HASH: request.decisionHash,
+            ACM_STAGE_ID: request.stageId,
+          },
         },
       );
       if (result.status !== 0 || result.error) {

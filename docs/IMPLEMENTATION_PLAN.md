@@ -122,6 +122,8 @@
 
 ### V2-01 Firstmate Workflow Authority
 
+Status：完成。
+
 交付：
 
 - versioned decision envelope。
@@ -138,13 +140,15 @@
 
 ### V2-02 Canonical Run Registry
 
+Status：完成。
+
 Blocked by：V2-01 的 decision envelope identity。
 
 交付：
 
 - stable intent fingerprint 與 idempotency key。
 - canonical run／attempt 分離。
-- durable intent + outbox。
+- durable intent + dispatch receipt。
 - lease／compare-and-set single-writer gate。
 - downstream receipt read-back 與 `unknown_outcome` reconciliation。
 - append-only task、worker、artifact、review、report lineage。
@@ -158,11 +162,14 @@ Blocked by：V2-01 的 decision envelope identity。
 
 ### V2-03 Authority migration gate
 
+Status：核心受管 workflow 完成；保留實機回歸證據作 release gate。
+
 Blocked by：V2-01、V2-02。
 
 交付：
 
-- Quick、Standard、Adversarial、Research、Context Branch、Codex Review 全部改用同一 registry。
-- 舊 v0.1 records 的唯讀 migration／lineage mapping。
+- Standard、Adversarial、Research、Codex Review 使用同一 registry contract。
+- Quick 接收上層 idempotency key；Context Branch 維持一次性 lineage handoff，不取得 workflow authority。
+- 舊 v0.1 records 保持唯讀，不回填或偽造 v0.2 authority。
 - duplicate Standard dispatch 的回歸測試與實機證據。
-- authority 欄位由 `v0.2_deferred` 改為 verified 只在完整 gate 通過後進行。
+- 新 v0.2 record 只在 decision／registry／artifact strict read-back 通過後標示 verified。

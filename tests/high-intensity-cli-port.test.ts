@@ -128,6 +128,10 @@ describe("high-intensity CLI port", () => {
       contextId: "ctx-author-1",
       phase: "author",
       round: 1,
+      workflowDecisionId: "wfd_test",
+      decisionHash: "1".repeat(64),
+      stageId: "author",
+      idempotencyKey: "dispatch-test",
     });
 
     expect(calls).toEqual([
@@ -215,6 +219,10 @@ describe("high-intensity CLI port", () => {
       contextId: "ctx-author-1",
       phase: "author",
       round: 1,
+      workflowDecisionId: "wfd_test",
+      decisionHash: "1".repeat(64),
+      stageId: "author",
+      idempotencyKey: "dispatch-test",
     })).rejects.toThrow("agent_execution_failed");
     expect(calls[0]?.args).toContain("gpt-5.6-sol-high");
     expect(calls.length).toBe(1);

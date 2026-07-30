@@ -92,8 +92,6 @@ const tierRank: Record<CapabilityTier, number> = {
 };
 
 const defaultConfigVersionHash = "high-intensity-core-v1";
-const authorityLimitation =
-  "authority:v0.1 deterministic port-driven core only; unified Workflow Authority and durable Runtime Authority are v0.2 seams";
 
 export function routeHighIntensityWorkflow(
   input: HighIntensityInput,
@@ -301,7 +299,6 @@ export function composeHighIntensityReport(
       routingDecisionKey: options.routingDecision.requestKey,
       lineage,
       limitations: [
-        authorityLimitation,
         ...counterexamples,
         ...limits,
         ...options.coverage.gaps.map((gap) => `coverage_gap:${gap}`),

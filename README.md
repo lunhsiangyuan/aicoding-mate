@@ -2,7 +2,7 @@
 
 AI Coding Mate 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目標、優先順序與不能碰的邊界；系統負責把技術工作交給 Firstmate、Herdr 與不同模型，並把結果整理成能直接閱讀的報告。
 
-> 目前狀態：v0.1 已提供 Herdr doctor、Firstmate Quick、Standard、Adversarial、Research、Context Branch 與 Codex native review bridge；v0.2 的 Workflow Authority 與 Runtime Authority 已核准為下一階段核心，尚未宣稱完成。
+> 目前狀態：v0.2 已把 Firstmate Workflow Authority 與 canonical Run Registry 接到 Standard、Adversarial、Research 與 Codex native review。Quick 是 Firstmate 的下游執行 primitive，接受同一 idempotency key；Context Branch 則維持一次性、可稽核的回傳通道，不取得 workflow 決策權。
 
 ## 它要解決什麼
 
@@ -34,7 +34,7 @@ AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herd
 - **Herdr**：提供可見的 agent runtime、工作區與 plugin surface。
 - **Codex／Claude／Cursor／Gemini**：依角色執行、搜尋、review 或裁決。
 
-## v0.1 核心能力
+## 核心能力
 
 - Architect 自動處理可逆的技術決策。
 - 只有成本、敏感資料、外部行動或不可逆操作需要使用者確認。
@@ -50,7 +50,7 @@ AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herd
 
 ## 設定方式
 
-v0.1 將提供兩個入口，內容等價：
+設定可透過兩種等價入口表達：
 
 1. 給一般使用者的設定畫面。
 2. 給進階使用者與版本控制使用的 YAML 設定檔。
@@ -127,12 +127,12 @@ bun bin/aicoding-mate open --entrypoint research
 
 ## v0.2 Authority
 
-v0.2 的兩個必要條件：
+v0.2 落實兩個 authority：
 
 - **Workflow Authority**：Firstmate 是 Author、Reviewer、Challenger、Judge、Report Composer、fallback 與停止條件的唯一 decision writer；Adapter 只回報能力與執行 exact assignment。
-- **Runtime Authority**：Run Registry 以 stable idempotency key 管理 canonical run、attempt、outbox、lease、`unknown_outcome` reconciliation 與 append-only lineage。
+- **Runtime Authority**：Run Registry 以 stable idempotency key 管理 canonical run、attempt、dispatch receipt、lease、`unknown_outcome` reconciliation 與 append-only hash-chain lineage。
 
-在這兩項通過實機 gate 前，v0.1 records 會維持 `v0.2_deferred`。詳細驗收見 [產品規格第 9 節](docs/SPEC.md#9-v02-核心兩個-authority)。
+受管 workflow 的 durable record 只有在 decision、registry、artifact 與 lineage 全部讀回一致後，才標示 `firstmate_verified` 與 `canonical_run_registry_verified`。逾時或 receipt 遺失會進入 `unknown_outcome`，先查既有結果，不直接重派。詳細契約與限制見 [產品規格第 9 節](docs/SPEC.md#9-v02-核心兩個-authority)。
 
 安裝或 link Herdr plugin 代表在本機以使用者權限執行此 repository 的程式碼；請先檢查 `herdr-plugin.toml`、`bin/aicoding-mate` 與 `src/`。
 

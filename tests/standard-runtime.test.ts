@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -190,10 +191,15 @@ describe("standard runtime integration", () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(result.dedupeStatus).toBe("new");
     expect(observedRequest?.workflow).toBe("standard");
     expect(observedRequest?.task).not.toContain("薄 adapter");
-    expect(observedRequest?.routingDecision.diversityStatus).toBe(
-      "cross_family",
+    expect(observedRequest?.task).toContain(
+      "至少三個 debugging hypotheses",
+    );
+    expect(observedRequest?.exactAssignment.role).toBe("author");
+    expect(observedRequest?.workflowDecisionId).toBe(
+      result.record.workflowDecision?.workflowDecisionId,
     );
     expect(result.record.claims).toEqual({
       authorCompletedInFirstmate: true,
@@ -202,9 +208,169 @@ describe("standard runtime integration", () => {
       reportReadbackMatchesPane: false,
     });
     expect(result.record.report?.mainReport.conclusion).toContain("薄 adapter");
+    expect(result.record.workflowDecision?.authority).toBe("firstmate");
+    expect(result.record.authority).toMatchObject({
+      workflowAuthority: "firstmate_verified",
+      runtimeAuthority: "canonical_run_registry_verified",
+    });
     expect(readStandardRunRecord(result.record.recordPath)?.id).toBe(
       result.record.id,
     );
+  });
+
+  test("coalesces a completed duplicate Standard intent without a second dispatch", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    let authorDispatches = 0;
+    let reviewDispatches = 0;
+    const basePorts = successfulPorts();
+    const ports: StandardRuntimePorts = {
+      async dispatchAuthor(request) {
+        authorDispatches += 1;
+        return basePorts.dispatchAuthor(request);
+      },
+      async review(prompt, assignment, execution) {
+        reviewDispatches += 1;
+        return basePorts.review(prompt, assignment, execution);
+      },
+    };
+    const options = {
+      task: "同一個 Standard intent 只能派一次",
+      cwd: root,
+      env: {
+        ACM_STATE_DIR: join(root, "state"),
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+      },
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports,
+    };
+
+    const first = await createStandardRun(options);
+    const second = await createStandardRun(options);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(second.dedupeStatus).toBe("coalesced_completed");
+    expect(second.record.id).toBe(first.record.id);
+    expect(authorDispatches).toBe(1);
+    expect(reviewDispatches).toBe(1);
+  });
+
+  test("coalesces an active duplicate before the first Firstmate receipt returns", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    const basePorts = successfulPorts();
+    let authorDispatches = 0;
+    let releaseAuthor: (() => void) | undefined;
+    const authorGate = new Promise<void>((resolve) => {
+      releaseAuthor = resolve;
+    });
+    const ports: StandardRuntimePorts = {
+      async dispatchAuthor(request) {
+        authorDispatches += 1;
+        await authorGate;
+        return basePorts.dispatchAuthor(request);
+      },
+      review: basePorts.review,
+    };
+    const options = {
+      task: "快速重送仍只建立一個 canonical run",
+      cwd: root,
+      env: {
+        ACM_STATE_DIR: join(root, "state"),
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+      },
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports,
+    };
+
+    const firstPromise = createStandardRun(options);
+    while (authorDispatches === 0) {
+      await Promise.resolve();
+    }
+    const duplicate = await createStandardRun(options);
+    releaseAuthor?.();
+    const first = await firstPromise;
+
+    expect(first.ok).toBe(true);
+    expect(duplicate.ok).toBe(false);
+    expect(duplicate.dedupeStatus).toBe("coalesced_active");
+    expect(duplicate.record.id).toBe(first.record.id);
+    expect(authorDispatches).toBe(1);
+  });
+
+  test("reconciles an unknown Firstmate outcome by read-back without redispatch", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    const basePorts = successfulPorts();
+    let authorDispatches = 0;
+    let reviewDispatches = 0;
+    const recoveredOutcome = await basePorts.dispatchAuthor({
+      idempotencyKey: "fixture",
+      workflow: "standard",
+      workflowDecisionId: "wfd_fixture",
+      decisionHash: "1".repeat(64),
+      stageId: "author",
+      exactAssignment: {
+        role: "author",
+        alias: "openai-builder",
+        provider: "openai",
+        family: "openai",
+        resolvedModel: "configured-openai-builder",
+        capabilityTier: "implementation",
+        reason: "fixture",
+      },
+      projectDir: root,
+      source: {
+        taskId: "fixture",
+        runId: "fixture",
+        workspace: "w1",
+        tabId: "w1:t1",
+        paneId: "w1:p1",
+      },
+      task: "fixture",
+    });
+    const ports: StandardRuntimePorts = {
+      async dispatchAuthor() {
+        authorDispatches += 1;
+        throw new Error("crash_after_downstream_accept");
+      },
+      async readBackAuthor() {
+        return { status: "found", outcome: recoveredOutcome };
+      },
+      async review(prompt, assignment, execution) {
+        reviewDispatches += 1;
+        return basePorts.review(prompt, assignment, execution);
+      },
+    };
+    const options = {
+      task: "receipt 寫入前中斷必須先 read back",
+      cwd: root,
+      env: {
+        ACM_STATE_DIR: join(root, "state"),
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+      },
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports,
+    };
+
+    const interrupted = await createStandardRun(options);
+    const reconciled = await createStandardRun(options);
+
+    expect(interrupted.ok).toBe(false);
+    expect(interrupted.record.blockers).toContain(
+      "firstmate_author_unknown_outcome",
+    );
+    expect(reconciled.ok).toBe(true);
+    expect(authorDispatches).toBe(1);
+    expect(reviewDispatches).toBe(1);
+    expect(reconciled.record.id).toBe(interrupted.record.id);
   });
 
   test("env override disables Claude reviewer before probe and routes to degraded same-family fallback", async () => {
@@ -261,7 +427,7 @@ describe("standard runtime integration", () => {
               evidencePath: "/tmp/quick-author-1.json",
               reason: null,
             },
-            summary: `author=${request.routingDecision.diversityStatus}`,
+            summary: `author=${request.exactAssignment.family}`,
             quickRecordPath: "/tmp/quick-author-1.json",
           };
         },
@@ -333,6 +499,71 @@ describe("standard runtime integration", () => {
     expect(result.record.claims.reportDecisionReady).toBe(false);
   });
 
+  test("repairs one overlong reviewer response without changing its exact assignment", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    const ports = successfulPorts();
+    const idempotencyKeys: string[] = [];
+    let reviewCalls = 0;
+    const result = await createStandardRun({
+      task: "分析架構",
+      cwd: root,
+      env: {
+        ACM_STATE_DIR: join(root, "state"),
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+      },
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports: {
+        ...ports,
+        async review(prompt, assignment, execution) {
+          reviewCalls += 1;
+          idempotencyKeys.push(execution.idempotencyKey);
+          expect(assignment.family).toBe("anthropic");
+          if (reviewCalls === 1) {
+            expect(prompt).toContain("各不超過 180 個 Unicode 字元");
+            return {
+              ok: true,
+              family: assignment.family,
+              model: assignment.resolvedModel,
+              rawOutput: JSON.stringify({
+                conclusion: "採用單一 authority。",
+                impact: "長".repeat(241),
+                nextAction: "執行 v0.2 gate。",
+                limitations: [],
+                unknowns: [],
+              }),
+              error: null,
+            };
+          }
+          expect(prompt).toContain("只做壓縮與格式修復");
+          return {
+            ok: true,
+            family: assignment.family,
+            model: assignment.resolvedModel,
+            rawOutput: JSON.stringify({
+              conclusion: "採用單一 authority。",
+              impact: "Adapter 不再形成第二個決策真相。",
+              nextAction: "執行 v0.2 gate。",
+              limitations: [],
+              unknowns: [],
+            }),
+            error: null,
+          };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(reviewCalls).toBe(2);
+    expect(new Set(idempotencyKeys).size).toBe(2);
+    expect(result.record.reviewAttempts).toHaveLength(2);
+    expect(result.record.report?.mainReport.impact).toBe(
+      "Adapter 不再形成第二個決策真相。",
+    );
+  });
+
   test("rejects a verbose reviewer main report instead of silently truncating", async () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
     const ports = successfulPorts();
@@ -369,6 +600,7 @@ describe("standard runtime integration", () => {
 
     expect(result.ok).toBe(false);
     expect(result.record.blockers).toContain("review_contract_invalid");
+    expect(result.record.reviewAttempts).toHaveLength(2);
   });
 
   test("fails before dispatch without a Herdr source pane", async () => {
@@ -441,6 +673,11 @@ describe("standard runtime integration", () => {
             resolvedModel: "fable",
             capabilityTier: "architecture",
             reason: "test reviewer assignment",
+          }, {
+            workflowDecisionId: "wfd_test",
+            decisionHash: "1".repeat(64),
+            stageId: "reviewer",
+            idempotencyKey: "review-test",
           });
           return { ...outcome, family: "openai" };
         },
@@ -477,6 +714,11 @@ describe("standard runtime integration", () => {
             resolvedModel: "fable",
             capabilityTier: "architecture",
             reason: "test reviewer assignment",
+          }, {
+            workflowDecisionId: "wfd_test",
+            decisionHash: "1".repeat(64),
+            stageId: "reviewer",
+            idempotencyKey: "review-test",
           });
           return { ...outcome, model: "different-model" };
         },
@@ -520,4 +762,45 @@ describe("standard runtime integration", () => {
     );
     expect(marked?.claims.reportReadbackMatchesPane).toBe(true);
   });
+
+  test("read-back rejects a tampered Firstmate workflow decision", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    const result = await createStandardRun({
+      task: "分析架構",
+      cwd: root,
+      env: {
+        ACM_STATE_DIR: join(root, "state"),
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+      },
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports: successfulPorts(),
+    });
+    const stored = JSON.parse(
+      readFileSync(result.record.recordPath, "utf8"),
+    ) as Record<string, unknown>;
+    const decision = stored.workflowDecision;
+    if (!isObject(decision)) {
+      throw new Error("workflow decision missing");
+    }
+    writeFileSync(
+      result.record.recordPath,
+      `${JSON.stringify({
+        ...stored,
+        workflowDecision: {
+          ...decision,
+          decisionHash: "0".repeat(64),
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    expect(readStandardRunRecord(result.record.recordPath)).toBeUndefined();
+  });
 });
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}

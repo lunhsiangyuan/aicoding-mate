@@ -1,10 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import {
   assertDecisionReadyReport,
+  assertWorkflowDecisionEnvelope,
+  lookupExactStageAssignment,
   type AvailabilityCandidate,
   type AvailabilitySnapshot,
   type DecisionReadyReport,
@@ -13,9 +15,16 @@ import {
   type RoleAssignment,
   type RoutingDecision,
   type SourceLineage,
+  type WorkflowDecisionEnvelope,
 } from "../contracts/index.ts";
 import {
+  createFirstmateWorkflowDecision,
+  workflowDispatchIdempotencyKey,
+} from "../authority/firstmate-decisions.ts";
+import {
   createQuickRun,
+  quickRunIdForIdempotencyKey,
+  readRunRecord,
   type QuickResult,
   type QuickRunRecord,
 } from "../quick.ts";
@@ -24,6 +33,11 @@ import {
   type NormalizedStandardInput,
   type StandardWorkflowInput,
 } from "../routing/standard.ts";
+import {
+  FileRunRegistry,
+  type RegistryLease,
+  type RunProjection,
+} from "../runtime/run-registry.ts";
 
 export type StandardRuntimeStatus = "blocked" | "completed";
 
@@ -41,6 +55,13 @@ export interface StandardDispatchOutcome {
   readonly quickRecordPath: string | null;
 }
 
+export interface StandardReviewExecution {
+  readonly workflowDecisionId: string;
+  readonly decisionHash: string;
+  readonly stageId: "reviewer";
+  readonly idempotencyKey: string;
+}
+
 export interface StandardRuntimePorts {
   readonly dispatchAuthor: (
     request: FirstmateDispatchRequest,
@@ -48,11 +69,25 @@ export interface StandardRuntimePorts {
   readonly review: (
     prompt: string,
     assignment: RoleAssignment,
+    execution: StandardReviewExecution,
   ) => Promise<StandardReviewOutcome>;
+  readonly readBackAuthor?: (
+    request: FirstmateDispatchRequest,
+  ) => Promise<
+    | {
+        readonly status: "found";
+        readonly outcome: StandardDispatchOutcome;
+      }
+    | {
+        readonly status: "not_found" | "mismatch";
+        readonly checkedAt: string;
+        readonly reason: string;
+      }
+  >;
 }
 
 export interface StandardRunRecord {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly id: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -63,10 +98,18 @@ export interface StandardRunRecord {
   readonly availability: AvailabilitySnapshot;
   readonly normalizedInput: NormalizedStandardInput;
   readonly routingDecision: RoutingDecision | null;
+  readonly workflowDecision: WorkflowDecisionEnvelope | null;
   readonly author: StandardDispatchOutcome | null;
   readonly review: StandardReviewOutcome | null;
+  readonly reviewAttempts: readonly StandardReviewOutcome[];
   readonly report: DecisionReadyReport | null;
   readonly blockers: readonly string[];
+  readonly authority: {
+    readonly workflowAuthority: "firstmate_verified";
+    readonly runtimeAuthority: "canonical_run_registry_verified";
+    readonly canonicalRunId: string | null;
+    readonly idempotencyKey: string | null;
+  };
   readonly claims: {
     readonly authorCompletedInFirstmate: boolean;
     readonly independentReviewCompleted: boolean;
@@ -89,6 +132,11 @@ export interface StandardRunOptions {
 export interface StandardRunResult {
   readonly ok: boolean;
   readonly record: StandardRunRecord;
+  readonly dedupeStatus:
+    | "new"
+    | "coalesced_active"
+    | "coalesced_completed"
+    | "reconciliation_required";
 }
 
 type CompletedFirstmateAuthorRecord = QuickRunRecord & {
@@ -135,10 +183,8 @@ export async function createStandardRun(
 ): Promise<StandardRunResult> {
   const now = options.now ?? (() => new Date().toISOString());
   const createdAt = now();
-  const id = `standard-${compactTimestamp(createdAt)}`;
   const projectDir = resolve(options.projectDir ?? options.cwd);
   const stateDir = resolveStateDir(options.cwd, options.env);
-  const recordPath = join(stateDir, "standard-runs", `${id}.json`);
   const availability =
     options.availability ?? probeStandardAvailability(options.cwd, options.env, now);
   const input: StandardWorkflowInput = {
@@ -151,10 +197,17 @@ export async function createStandardRun(
     ],
   };
   const plan = planStandardWorkflow({ input, availability });
-  const source = sourceFromEnvironment(id, options.env);
-  const base: StandardRunRecord = {
-    schemaVersion: 1,
-    id,
+  const source = sourceFromEnvironment(options.env);
+  const provisionalId =
+    `standard-invalid-${compactTimestamp(createdAt)}-${randomUUID()}`;
+  const provisionalPath = join(
+    stateDir,
+    "standard-runs",
+    `${provisionalId}.json`,
+  );
+  const provisional: StandardRunRecord = {
+    schemaVersion: 2,
+    id: provisionalId,
     createdAt,
     updatedAt: createdAt,
     status: "blocked",
@@ -165,36 +218,93 @@ export async function createStandardRun(
     normalizedInput: plan.normalizedInput,
     routingDecision:
       plan.routing.status === "resolved" ? plan.routing.decision : null,
+    workflowDecision: null,
     author: null,
     review: null,
+    reviewAttempts: [],
     report: null,
     blockers: [],
+    authority: {
+      workflowAuthority: "firstmate_verified",
+      runtimeAuthority: "canonical_run_registry_verified",
+      canonicalRunId: null,
+      idempotencyKey: null,
+    },
     claims: {
       authorCompletedInFirstmate: false,
       independentReviewCompleted: false,
       reportDecisionReady: false,
       reportReadbackMatchesPane: false,
     },
-    recordPath,
+    recordPath: provisionalPath,
   };
 
   if (!options.task.trim()) {
-    return blocked(base, now, "standard_task_empty");
+    return blocked(provisional, now, "standard_task_empty");
   }
   if (!source.paneId.trim()) {
-    return blocked(base, now, "standard_requires_herdr_pane");
+    return blocked(provisional, now, "standard_requires_herdr_pane");
   }
   if (!source.workspace.trim() || !source.tabId.trim()) {
-    return blocked(base, now, "standard_requires_complete_herdr_lineage");
+    return blocked(
+      provisional,
+      now,
+      "standard_requires_complete_herdr_lineage",
+    );
   }
   if (plan.routing.status !== "resolved") {
     return blocked(
-      base,
+      provisional,
       now,
       `routing_${plan.routing.status}:${plan.routing.reason}`,
     );
   }
 
+  const workflowDecision = createFirstmateWorkflowDecision({
+    recipe: "standard",
+    intentHash: plan.normalizedInput.hash,
+    configVersion: plan.config.versionHash,
+    availability,
+    routingDecision: plan.routing.decision,
+    source,
+  });
+  const registry = new FileRunRegistry({
+    rootDir: join(stateDir, "run-registry"),
+  });
+  const opened = registry.openOrCreateRun({
+    intent: {
+      workflow: "standard",
+      projectDir,
+      task: plan.normalizedInput.task,
+      source,
+      inputs: {
+        normalizedInputHash: plan.normalizedInput.hash,
+        risk: plan.normalizedInput.risk,
+        boundaries: plan.normalizedInput.boundaries,
+      },
+      availabilitySnapshotId: availability.id,
+      routingDecisionVersion: plan.routing.decision.requestKey,
+      decisionVersion: workflowDecision.workflowDecisionId,
+    },
+    owner: `standard:${process.pid}:${randomUUID()}`,
+    leaseTtlMs: leaseTtlMs(options.env),
+    now: createdAt,
+  });
+  const id = `standard-${opened.run.runId.slice(4)}`;
+  const recordPath = join(stateDir, "standard-runs", `${id}.json`);
+  const base: StandardRunRecord = {
+    ...provisional,
+    id,
+    recordPath,
+    routingDecision: plan.routing.decision,
+    workflowDecision,
+    authority: {
+      workflowAuthority: "firstmate_verified",
+      runtimeAuthority: "canonical_run_registry_verified",
+      canonicalRunId: opened.run.runId,
+      idempotencyKey: opened.run.idempotencyKey,
+    },
+  };
   const ports =
     options.ports ??
     defaultStandardRuntimePorts({
@@ -202,93 +312,409 @@ export async function createStandardRun(
       projectDir,
       env: options.env,
     });
+  const authorStage = lookupExactStageAssignment(workflowDecision, "author");
+  const authorDispatchKey = workflowDispatchIdempotencyKey(
+    opened.run.runId,
+    workflowDecision.decisionHash,
+    "author",
+    null,
+  );
   const dispatchRequest: FirstmateDispatchRequest = {
-    idempotencyKey: `${id}:author`,
+    idempotencyKey: authorDispatchKey,
     workflow: "standard",
+    workflowDecisionId: workflowDecision.workflowDecisionId,
+    decisionHash: workflowDecision.decisionHash,
+    stageId: "author",
+    exactAssignment: authorStage.roleAssignment,
     projectDir,
     source,
     task: encodedArchitectureTask(options.task),
-    routingDecision: plan.routing.decision,
   };
-  const author = await ports.dispatchAuthor(dispatchRequest);
-  if (!author.receipt.accepted || author.summary === null) {
-    return blocked(
-      { ...base, author },
-      now,
-      author.receipt.reason ?? "firstmate_author_failed",
-    );
+  let lease: RegistryLease | null = null;
+  let reconciledAuthor: StandardDispatchOutcome | null = null;
+
+  if (opened.kind !== "created") {
+    const existing = readStandardRunRecord(recordPath);
+    if (
+      opened.kind === "coalesced_completed"
+      && existing !== undefined
+      && opened.run.completedArtifact?.path === recordPath
+      && opened.run.completedArtifact.hash === standardRecordHash(existing)
+    ) {
+      return {
+        ok: existing.status === "completed",
+        record: existing,
+        dedupeStatus: "coalesced_completed",
+      };
+    }
+    if (
+      opened.kind !== "opened"
+      || (
+        opened.run.status !== "unknown_outcome"
+        && opened.run.status !== "pending"
+        && opened.run.status !== "dispatching"
+        && opened.run.status !== "accepted"
+        && opened.run.status !== "running"
+      )
+      || ports.readBackAuthor === undefined
+    ) {
+      return {
+        ok: false,
+        record: existing ?? {
+          ...base,
+          blockers: [
+            opened.kind === "coalesced_active"
+              ? "canonical_run_active"
+              : "canonical_run_requires_reconciliation",
+          ],
+        },
+        dedupeStatus:
+          opened.kind === "coalesced_active"
+            ? "coalesced_active"
+            : "reconciliation_required",
+      };
+    }
+    lease = registry.acquireRunLease({
+      runId: opened.run.runId,
+      owner: `standard-reconcile:${process.pid}:${randomUUID()}`,
+      leaseTtlMs: leaseTtlMs(options.env),
+      now: createdAt,
+    });
+    if (lease === null) {
+      return {
+        ok: false,
+        record: existing ?? base,
+        dedupeStatus: "coalesced_active",
+      };
+    }
+    if (opened.run.status !== "unknown_outcome") {
+      registry.markUnknownOutcome(lease, {
+        reason: "stale_lease_requires_downstream_readback",
+        readback: {
+          status: "mismatch",
+          checkedAt: now(),
+          reason: "previous_owner_lease_expired",
+        },
+        now: now(),
+      });
+    }
+    const readBack = await ports.readBackAuthor(dispatchRequest);
+    if (readBack.status === "found") {
+      reconciledAuthor = readBack.outcome;
+      registry.acceptDispatch(lease, {
+        idempotencyKey: authorDispatchKey,
+        target: readBack.outcome.receipt.workerTarget,
+        receiptPath: readBack.outcome.receipt.evidencePath,
+        now: now(),
+      });
+      registry.markRunning(lease, { now: now() });
+    } else if (readBack.status === "not_found") {
+      registry.requestRetryAfterReadbackNotFound(lease, {
+        readback: readBack,
+        now: now(),
+      });
+      writeStandardRecord(base);
+    } else {
+      releaseLeaseIfHeld(registry, lease);
+      return {
+        ok: false,
+        record: existing ?? base,
+        dedupeStatus: "reconciliation_required",
+      };
+    }
+  } else {
+    lease = opened.lease;
+    writeStandardRecord(base);
   }
 
-  const reviewerAssignment = plan.routing.decision.roleAssignments.find(
-    (assignment) => assignment.role === "reviewer",
-  );
-  if (reviewerAssignment === undefined) {
-    return blocked({ ...base, author }, now, "reviewer_assignment_missing");
-  }
-  const review = await ports.review(
-    buildReviewPrompt(options.task, author.summary, plan.routing.decision),
-    reviewerAssignment,
-  );
-  if (!review.ok) {
-    return blocked(
-      { ...base, author, review },
-      now,
-      review.error ?? "independent_review_failed",
-    );
-  }
-  if (
-    review.family !== reviewerAssignment.family ||
-    review.model !== reviewerAssignment.resolvedModel
-  ) {
-    return blocked(
-      { ...base, author, review },
-      now,
-      "review_provenance_mismatch",
-    );
-  }
-  const reviewDocument = parseReviewDocument(review.rawOutput);
-  if (reviewDocument === null) {
-    return blocked(
-      { ...base, author, review },
-      now,
-      "review_contract_invalid",
-    );
-  }
-
-  const report = composeRuntimeReport({
-    reviewDocument,
-    normalizedInput: plan.normalizedInput,
-    routingDecision: plan.routing.decision,
-    configVersionHash: plan.config.versionHash,
-    availability,
-    author,
-    review,
-  });
+  if (lease === null) throw new Error("registry_lease_missing");
   try {
-    assertDecisionReadyReport(report);
-  } catch (error) {
-    return blocked(
-      { ...base, author, review, report },
-      now,
-      error instanceof Error ? error.message : "report_contract_invalid",
-    );
-  }
+    const authorWasReconciled = reconciledAuthor !== null;
+    let author = reconciledAuthor;
+    if (author === null) {
+      registry.recordDispatch(lease, {
+        idempotencyKey: authorDispatchKey,
+        target: null,
+        receiptPath: null,
+        accepted: false,
+        now: now(),
+      });
+      try {
+        author = await ports.dispatchAuthor(dispatchRequest);
+      } catch {
+        registry.markUnknownOutcome(lease, {
+          reason: "firstmate_author_unknown_outcome",
+          readback: {
+            status: "mismatch",
+            checkedAt: now(),
+            reason: "dispatch_threw_before_receipt_readback",
+          },
+          now: now(),
+        });
+        return blocked(
+          base,
+          now,
+          "firstmate_author_unknown_outcome",
+        );
+      }
+    }
+    if (!author.receipt.accepted || author.summary === null) {
+      registry.failAttempt(lease, {
+        reason: author.receipt.reason ?? "firstmate_author_failed",
+        now: now(),
+      });
+      return blocked(
+        { ...base, author },
+        now,
+        author.receipt.reason ?? "firstmate_author_failed",
+      );
+    }
+    if (!authorWasReconciled) {
+      registry.acceptDispatch(lease, {
+        idempotencyKey: authorDispatchKey,
+        target: author.receipt.workerTarget,
+        receiptPath: author.receipt.evidencePath,
+        now: now(),
+      });
+      registry.markRunning(lease, { now: now() });
+    }
 
-  const record = writeStandardRecord({
-    ...base,
-    updatedAt: now(),
-    status: "completed",
-    author,
-    review,
-    report,
-    claims: {
-      ...base.claims,
-      authorCompletedInFirstmate: true,
-      independentReviewCompleted: true,
-      reportDecisionReady: true,
-    },
-  });
-  return { ok: true, record };
+    const reviewerStage = lookupExactStageAssignment(
+      workflowDecision,
+      "reviewer",
+    );
+    const reviewerAssignment = reviewerStage.roleAssignment;
+    const reviewDispatchKey = workflowDispatchIdempotencyKey(
+      opened.run.runId,
+      workflowDecision.decisionHash,
+      "reviewer",
+      null,
+    );
+    registry.recordDispatch(lease, {
+      idempotencyKey: reviewDispatchKey,
+      target: reviewerAssignment.alias,
+      receiptPath: null,
+      accepted: false,
+      now: now(),
+    });
+    const reviewAttempts: StandardReviewOutcome[] = [];
+    let review: StandardReviewOutcome;
+    try {
+      review = await ports.review(
+        buildReviewPrompt(options.task, author.summary, plan.routing.decision),
+        reviewerAssignment,
+        {
+          workflowDecisionId: workflowDecision.workflowDecisionId,
+          decisionHash: workflowDecision.decisionHash,
+          stageId: "reviewer",
+          idempotencyKey: reviewDispatchKey,
+        },
+      );
+    } catch {
+      registry.markUnknownOutcome(lease, {
+        reason: "independent_review_unknown_outcome",
+        readback: {
+          status: "mismatch",
+          checkedAt: now(),
+          reason: "review_dispatch_threw_before_receipt_readback",
+        },
+        now: now(),
+      });
+      return blocked(
+        { ...base, author },
+        now,
+        "independent_review_unknown_outcome",
+      );
+    }
+    if (!review.ok) {
+      reviewAttempts.push(review);
+      registry.failAttempt(lease, {
+        reason: review.error ?? "independent_review_failed",
+        now: now(),
+      });
+      return blocked(
+        { ...base, author, review, reviewAttempts },
+        now,
+        review.error ?? "independent_review_failed",
+      );
+    }
+    if (
+      review.family !== reviewerAssignment.family ||
+      review.model !== reviewerAssignment.resolvedModel
+    ) {
+      reviewAttempts.push(review);
+      registry.failAttempt(lease, {
+        reason: "review_provenance_mismatch",
+        now: now(),
+      });
+      return blocked(
+        { ...base, author, review, reviewAttempts },
+        now,
+        "review_provenance_mismatch",
+      );
+    }
+    registry.acceptDispatch(lease, {
+      idempotencyKey: reviewDispatchKey,
+      target: `${review.family}:${review.model}`,
+      receiptPath: null,
+      now: now(),
+    });
+    registry.markRunning(lease, { now: now() });
+    reviewAttempts.push(review);
+
+    let reviewDocument = parseReviewDocument(review.rawOutput);
+    if (reviewDocument === null && plan.config.recipe.repairRounds > 0) {
+      const repairDispatchKey = workflowDispatchIdempotencyKey(
+        opened.run.runId,
+        workflowDecision.decisionHash,
+        "reviewer",
+        1,
+      );
+      registry.recordDispatch(lease, {
+        idempotencyKey: repairDispatchKey,
+        target: reviewerAssignment.alias,
+        receiptPath: null,
+        accepted: false,
+        now: now(),
+      });
+      let repairedReview: StandardReviewOutcome;
+      try {
+        repairedReview = await ports.review(
+          buildReviewRepairPrompt(review.rawOutput),
+          reviewerAssignment,
+          {
+            workflowDecisionId: workflowDecision.workflowDecisionId,
+            decisionHash: workflowDecision.decisionHash,
+            stageId: "reviewer",
+            idempotencyKey: repairDispatchKey,
+          },
+        );
+      } catch {
+        registry.markUnknownOutcome(lease, {
+          reason: "review_repair_unknown_outcome",
+          readback: {
+            status: "mismatch",
+            checkedAt: now(),
+            reason: "repair_dispatch_threw_before_receipt_readback",
+          },
+          now: now(),
+        });
+        return blocked(
+          { ...base, author, review, reviewAttempts },
+          now,
+          "review_repair_unknown_outcome",
+        );
+      }
+      reviewAttempts.push(repairedReview);
+      if (!repairedReview.ok) {
+        registry.failAttempt(lease, {
+          reason: repairedReview.error ?? "review_repair_failed",
+          now: now(),
+        });
+        return blocked(
+          {
+            ...base,
+            author,
+            review: repairedReview,
+            reviewAttempts,
+          },
+          now,
+          repairedReview.error ?? "review_repair_failed",
+        );
+      }
+      if (
+        repairedReview.family !== reviewerAssignment.family
+        || repairedReview.model !== reviewerAssignment.resolvedModel
+      ) {
+        registry.failAttempt(lease, {
+          reason: "review_repair_provenance_mismatch",
+          now: now(),
+        });
+        return blocked(
+          {
+            ...base,
+            author,
+            review: repairedReview,
+            reviewAttempts,
+          },
+          now,
+          "review_repair_provenance_mismatch",
+        );
+      }
+      registry.acceptDispatch(lease, {
+        idempotencyKey: repairDispatchKey,
+        target: `${repairedReview.family}:${repairedReview.model}`,
+        receiptPath: null,
+        now: now(),
+      });
+      registry.markRunning(lease, { now: now() });
+      review = repairedReview;
+      reviewDocument = parseReviewDocument(repairedReview.rawOutput);
+    }
+    if (reviewDocument === null) {
+      registry.failAttempt(lease, {
+        reason: "review_contract_invalid",
+        now: now(),
+      });
+      return blocked(
+        { ...base, author, review, reviewAttempts },
+        now,
+        "review_contract_invalid",
+      );
+    }
+
+    const report = composeRuntimeReport({
+      reviewDocument,
+      normalizedInput: plan.normalizedInput,
+      routingDecision: plan.routing.decision,
+      workflowDecision,
+      configVersionHash: plan.config.versionHash,
+      availability,
+      author,
+      review,
+    });
+    try {
+      assertDecisionReadyReport(report);
+    } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : "report_contract_invalid";
+      registry.failAttempt(lease, { reason, now: now() });
+      return blocked(
+        { ...base, author, review, report },
+        now,
+        reason,
+      );
+    }
+
+    const record = writeStandardRecord({
+      ...base,
+      updatedAt: now(),
+      status: "completed",
+      author,
+      review,
+      reviewAttempts,
+      report,
+      claims: {
+        ...base.claims,
+        authorCompletedInFirstmate: true,
+        independentReviewCompleted: true,
+        reportDecisionReady: true,
+      },
+    });
+    registry.completeAttempt(lease, {
+      readback: {
+        status: "found",
+        runId: opened.run.runId,
+        attemptId: currentAttemptId(registry, opened.run.runId),
+        artifactPath: record.recordPath,
+        artifactHash: standardRecordHash(record),
+      },
+      now: now(),
+    });
+    return { ok: true, record, dedupeStatus: "new" };
+  } finally {
+    releaseLeaseIfHeld(registry, lease);
+  }
 }
 
 export function probeStandardAvailability(
@@ -371,7 +797,7 @@ export function readStandardRunRecord(
 ): StandardRunRecord | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return isStandardRunRecord(value) ? value : undefined;
+    return isStandardRunRecord(value, path) ? value : undefined;
   } catch {
     return undefined;
   }
@@ -407,10 +833,11 @@ function defaultStandardRuntimePorts(options: {
 }): StandardRuntimePorts {
   return {
     async dispatchAuthor(request) {
-      const authorAssignment = request.routingDecision.roleAssignments.find(
-        (assignment) => assignment.role === "author",
-      );
-      if (authorAssignment?.family !== "openai") {
+      if (
+        request.stageId !== "author"
+        || request.exactAssignment.role !== "author"
+        || request.exactAssignment.family !== "openai"
+      ) {
         return {
           receipt: {
             accepted: false,
@@ -429,6 +856,7 @@ function defaultStandardRuntimePorts(options: {
         cwd: options.cwd,
         projectDir: options.projectDir,
         env: options.env,
+        idempotencyKey: request.idempotencyKey,
       });
       if (
         !result.ok ||
@@ -463,10 +891,50 @@ function defaultStandardRuntimePorts(options: {
         quickRecordPath: result.record.recordPath,
       };
     },
-    async review(prompt, assignment) {
+    async readBackAuthor(request) {
+      const stateDir = resolveStateDir(options.cwd, options.env);
+      const recordPath = join(
+        stateDir,
+        "runs",
+        `${quickRunIdForIdempotencyKey(request.idempotencyKey)}.json`,
+      );
+      const record = readRunRecord(recordPath);
+      const checkedAt = new Date().toISOString();
+      if (record === undefined) {
+        return {
+          status: "not_found",
+          checkedAt,
+          reason: "firstmate_quick_record_not_found",
+        };
+      }
+      if (!hasFirstmateAuthorReadback(record)) {
+        return {
+          status: "mismatch",
+          checkedAt,
+          reason: `firstmate_quick_record_${record.status}`,
+        };
+      }
+      return {
+        status: "found",
+        outcome: {
+          receipt: {
+            accepted: true,
+            idempotencyStatus: "duplicate",
+            firstmateTaskId: record.worker.taskId,
+            workerTarget: record.worker.target,
+            evidencePath: record.recordPath,
+            reason: null,
+          },
+          summary: record.result.summary,
+          quickRecordPath: record.recordPath,
+        },
+      };
+    },
+    async review(prompt, assignment, execution) {
       return runIndependentReview(
         prompt,
         assignment,
+        execution,
         options.cwd,
         options.env,
       );
@@ -477,14 +945,15 @@ function defaultStandardRuntimePorts(options: {
 function runIndependentReview(
   prompt: string,
   assignment: RoleAssignment,
+  execution: StandardReviewExecution,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): StandardReviewOutcome {
   if (assignment.family === "anthropic") {
-    return runClaudeReview(prompt, assignment, cwd, env);
+    return runClaudeReview(prompt, assignment, execution, cwd, env);
   }
   if (assignment.family === "openai") {
-    return runCodexReview(prompt, assignment, cwd, env);
+    return runCodexReview(prompt, assignment, execution, cwd, env);
   }
   return {
     ok: false,
@@ -498,12 +967,19 @@ function runIndependentReview(
 function runClaudeReview(
   prompt: string,
   assignment: RoleAssignment,
+  execution: StandardReviewExecution,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): StandardReviewOutcome {
   const model =
     env.ACM_CLAUDE_REVIEW_MODEL ?? assignment.resolvedModel ?? "fable";
-  const reviewEnv = { ...env };
+  const reviewEnv: NodeJS.ProcessEnv = {
+    ...env,
+    ACM_IDEMPOTENCY_KEY: execution.idempotencyKey,
+    ACM_WORKFLOW_DECISION_ID: execution.workflowDecisionId,
+    ACM_DECISION_HASH: execution.decisionHash,
+    ACM_STAGE_ID: execution.stageId,
+  };
   delete reviewEnv.CLAUDE_CODE_SPAWN_BACKEND;
   delete reviewEnv.CLAUDE_CODE_WORKFLOWS;
   delete reviewEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
@@ -545,6 +1021,7 @@ function runClaudeReview(
 function runCodexReview(
   prompt: string,
   assignment: RoleAssignment,
+  execution: StandardReviewExecution,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): StandardReviewOutcome {
@@ -567,7 +1044,13 @@ function runCodexReview(
   args.push(prompt);
   const result = spawnSync("codex", args, {
     cwd,
-    env,
+    env: {
+      ...env,
+      ACM_IDEMPOTENCY_KEY: execution.idempotencyKey,
+      ACM_WORKFLOW_DECISION_ID: execution.workflowDecisionId,
+      ACM_DECISION_HASH: execution.decisionHash,
+      ACM_STAGE_ID: execution.stageId,
+    },
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 240_000,
@@ -595,6 +1078,7 @@ function buildReviewPrompt(
     "你是 AI Coding Mate 的獨立架構 reviewer。",
     "請用繁體中文，只輸出一個 JSON object，不要 Markdown，不要技術流水帳。",
     'Schema: {"conclusion":"一句可做決策的結論","impact":"一句最重要影響或取捨","nextAction":"一句下一步","limitations":["最多三項"],"unknowns":["最多三項"]}',
+    "長度硬限制：conclusion、impact、nextAction 各不超過 180 個 Unicode 字元；limitations 與 unknowns 每項不超過 120 個 Unicode 字元。",
     `使用者目標：${task}`,
     `Firstmate/Codex author 結果：${authorSummary}`,
     `routing diversity：${decision.diversityStatus}`,
@@ -602,11 +1086,26 @@ function buildReviewPrompt(
   ].join("\n");
 }
 
+function buildReviewRepairPrompt(rawOutput: string): string {
+  return [
+    "上一版 reviewer JSON 未通過 AI Coding Mate 的可讀性契約。",
+    "使用相同觀點，只做壓縮與格式修復；不要增加新風險、前言或解釋。",
+    "只輸出一個 JSON object，不要 Markdown。",
+    'Schema: {"conclusion":"一句可做決策的結論","impact":"一句最重要影響或取捨","nextAction":"一句下一步","limitations":["最多三項"],"unknowns":["最多三項"]}',
+    "長度硬限制：conclusion、impact、nextAction 各不超過 180 個 Unicode 字元；limitations 與 unknowns 每項不超過 120 個 Unicode 字元。",
+    `待修復輸出：${rawOutput}`,
+  ].join("\n");
+}
+
 function encodedArchitectureTask(task: string): string {
   const encoded = Buffer.from(task, "utf8").toString("base64url");
   return (
     "唯讀分析本地專案並回覆架構結論、影響與下一步，"
-    + `請先理解這份 base64url 目標資料：${encoded}`
+    + `請先理解這份 base64url 目標資料：${encoded}。`
+    + "完成 gate 若要求的 named skill 未出現在本次 skill catalog，"
+    + "不要只因別名不可用而阻擋；請直接執行等價的唯讀 code review，"
+    + "並記錄至少三個 debugging hypotheses 及各自的 runtime evidence，"
+    + "在報告中明確標示這項 portable fallback。"
   );
 }
 
@@ -642,6 +1141,7 @@ function composeRuntimeReport(options: {
   readonly reviewDocument: ReviewDocument;
   readonly normalizedInput: NormalizedStandardInput;
   readonly routingDecision: RoutingDecision;
+  readonly workflowDecision: WorkflowDecisionEnvelope;
   readonly configVersionHash: string;
   readonly availability: AvailabilitySnapshot;
   readonly author: StandardDispatchOutcome;
@@ -660,6 +1160,8 @@ function composeRuntimeReport(options: {
       routingDecisionKey: options.routingDecision.requestKey,
       lineage: [
         options.normalizedInput.hash,
+        `workflow_decision:${options.workflowDecision.workflowDecisionId}`,
+        `decision_hash:${options.workflowDecision.decisionHash}`,
         options.author.receipt.evidencePath ?? "author-evidence-missing",
         `${options.review.family}:${options.review.model}`,
       ],
@@ -669,16 +1171,16 @@ function composeRuntimeReport(options: {
   };
 }
 
-function sourceFromEnvironment(
-  runId: string,
-  env: NodeJS.ProcessEnv,
-): SourceLineage {
+function sourceFromEnvironment(env: NodeJS.ProcessEnv): SourceLineage {
   const paneId = env.HERDR_PANE_ID ?? env.ACM_QUICK_SOURCE_PANE ?? "";
+  const workspace = env.HERDR_WORKSPACE_ID ?? "";
+  const tabId = env.HERDR_TAB_ID ?? "";
+  const stableSource = [workspace, tabId, paneId].filter(Boolean).join(":");
   return {
-    taskId: runId,
-    runId,
-    workspace: env.HERDR_WORKSPACE_ID ?? "",
-    tabId: env.HERDR_TAB_ID ?? "",
+    taskId: env.ACM_SOURCE_TASK_ID ?? stableSource,
+    runId: env.ACM_SOURCE_RUN_ID ?? stableSource,
+    workspace,
+    tabId,
     paneId,
   };
 }
@@ -733,6 +1235,7 @@ function blocked(
       status: "blocked",
       blockers: [...record.blockers, blocker],
     }),
+    dedupeStatus: "new",
   };
 }
 
@@ -791,21 +1294,184 @@ function compactTimestamp(value: string): string {
   return value.replace(/[-:.]/g, "").replace("Z", "z");
 }
 
-function isStandardRunRecord(value: unknown): value is StandardRunRecord {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+function isStandardRunRecord(
+  value: unknown,
+  expectedPath: string,
+): value is StandardRunRecord {
+  if (!isRecordValue(value)) {
     return false;
   }
-  const record = value as Record<string, unknown>;
-  return (
-    record.schemaVersion === 1 &&
-    typeof record.id === "string" &&
-    typeof record.recordPath === "string" &&
-    (record.status === "blocked" || record.status === "completed")
-  );
+  const record = value;
+  if (
+    record.schemaVersion !== 2
+    || typeof record.id !== "string"
+    || !record.id.startsWith("standard-")
+    || typeof record.recordPath !== "string"
+    || resolve(record.recordPath) !== resolve(expectedPath)
+    || basename(record.recordPath) !== `${record.id}.json`
+    || (record.status !== "blocked" && record.status !== "completed")
+    || typeof record.createdAt !== "string"
+    || typeof record.updatedAt !== "string"
+    || typeof record.task !== "string"
+    || typeof record.projectDir !== "string"
+    || !isSourceLineage(record.source)
+    || !isRecordValue(record.normalizedInput)
+    || !isRecordValue(record.availability)
+    || !Array.isArray(record.reviewAttempts)
+    || !record.reviewAttempts.every(isStandardReviewOutcome)
+    || !Array.isArray(record.blockers)
+    || !record.blockers.every((item) => typeof item === "string")
+    || !isStandardAuthority(record.authority)
+    || !isStandardClaims(record.claims)
+  ) {
+    return false;
+  }
+  if (record.workflowDecision !== null) {
+    try {
+      assertWorkflowDecisionEnvelope(record.workflowDecision);
+    } catch {
+      return false;
+    }
+    if (!sameSourceLineage(record.source, record.workflowDecision.sourceLineage)) {
+      return false;
+    }
+  }
+  if (record.status === "completed") {
+    if (
+      record.routingDecision === null
+      || record.workflowDecision === null
+      || !isRecordValue(record.author)
+      || !isRecordValue(record.review)
+      || !isDecisionReadyReportCandidate(record.report)
+      || record.blockers.length !== 0
+      || typeof record.authority.canonicalRunId !== "string"
+      || typeof record.authority.idempotencyKey !== "string"
+      || record.claims.authorCompletedInFirstmate !== true
+      || record.claims.independentReviewCompleted !== true
+      || record.claims.reportDecisionReady !== true
+    ) {
+      return false;
+    }
+    try {
+      assertDecisionReadyReport(record.report);
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStandardReviewOutcome(value: unknown): value is StandardReviewOutcome {
+  return isRecordValue(value)
+    && typeof value.ok === "boolean"
+    && typeof value.family === "string"
+    && typeof value.model === "string"
+    && typeof value.rawOutput === "string"
+    && (value.error === null || typeof value.error === "string");
+}
+
+function isSourceLineage(value: unknown): value is SourceLineage {
+  return isRecordValue(value)
+    && typeof value.taskId === "string"
+    && typeof value.runId === "string"
+    && typeof value.workspace === "string"
+    && typeof value.tabId === "string"
+    && typeof value.paneId === "string";
+}
+
+function sameSourceLineage(left: SourceLineage, right: SourceLineage): boolean {
+  return left.taskId === right.taskId
+    && left.runId === right.runId
+    && left.workspace === right.workspace
+    && left.tabId === right.tabId
+    && left.paneId === right.paneId;
+}
+
+function isStandardAuthority(value: unknown): value is StandardRunRecord["authority"] {
+  if (!isRecordValue(value)) return false;
+  const canonicalRunId = value.canonicalRunId;
+  const idempotencyKey = value.idempotencyKey;
+  return value.workflowAuthority === "firstmate_verified"
+    && value.runtimeAuthority === "canonical_run_registry_verified"
+    && (canonicalRunId === null || typeof canonicalRunId === "string")
+    && (idempotencyKey === null || typeof idempotencyKey === "string")
+    && (canonicalRunId === null) === (idempotencyKey === null);
+}
+
+function isStandardClaims(value: unknown): value is StandardRunRecord["claims"] {
+  return isRecordValue(value)
+    && typeof value.authorCompletedInFirstmate === "boolean"
+    && typeof value.independentReviewCompleted === "boolean"
+    && typeof value.reportDecisionReady === "boolean"
+    && typeof value.reportReadbackMatchesPane === "boolean";
+}
+
+function isDecisionReadyReportCandidate(
+  value: unknown,
+): value is DecisionReadyReport {
+  if (!isRecordValue(value) || value.schemaVersion !== 1) return false;
+  const main = value.mainReport;
+  const evidence = value.evidenceLayer;
+  return isRecordValue(main)
+    && isRecordValue(evidence)
+    && typeof main.conclusion === "string"
+    && typeof main.impact === "string"
+    && typeof main.nextAction === "string"
+    && typeof evidence.configVersionHash === "string"
+    && typeof evidence.availabilitySnapshotId === "string"
+    && typeof evidence.routingDecisionKey === "string"
+    && Array.isArray(evidence.lineage)
+    && Array.isArray(evidence.limitations)
+    && Array.isArray(evidence.unknowns);
 }
 
 export function standardRecordHash(record: StandardRunRecord): string {
+  const canonical = {
+    ...record,
+    updatedAt: record.createdAt,
+    claims: {
+      ...record.claims,
+      reportReadbackMatchesPane: false,
+    },
+  };
   return createHash("sha256")
-    .update(JSON.stringify(record))
+    .update(JSON.stringify(canonical))
     .digest("hex");
+}
+
+function leaseTtlMs(env: NodeJS.ProcessEnv): number {
+  const parsed = Number.parseInt(env.ACM_RUN_LEASE_TTL_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : 900_000;
+}
+
+function activeAttemptId(run: RunProjection): string {
+  const attempt = run.attempts.at(-1);
+  if (!attempt) throw new Error("run_attempt_missing");
+  return attempt.id;
+}
+
+function currentAttemptId(
+  registry: FileRunRegistry,
+  runId: string,
+): string {
+  const run = registry.readRun(runId);
+  if (!run) throw new Error("run_projection_missing");
+  return activeAttemptId(run);
+}
+
+function releaseLeaseIfHeld(
+  registry: FileRunRegistry,
+  lease: RegistryLease,
+): void {
+  try {
+    registry.releaseLease(lease);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "lease_not_held") {
+      throw error;
+    }
+  }
 }

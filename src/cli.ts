@@ -44,6 +44,7 @@ import {
   readHighIntensityRunRecord,
 } from "./integration/high-intensity-runtime.ts";
 import { runCodexReviewFromHerdrSelection } from "./integration/codex-review-command.ts";
+import type { SourceLineage } from "./contracts/index.ts";
 
 export interface CliIO {
   cwd: string;
@@ -408,10 +409,13 @@ async function runHighIntensityCommand(
     input: {
       task: parsed.task,
       subquestions: parsed.questions,
-      configVersionHash: `${recipe}-v0.1`,
+      configVersionHash: `${recipe}-v0.2`,
     },
     availability,
     stateDir: stateDir(io),
+    projectDir: parsed.projectDir,
+    recipe,
+    source: highIntensitySource(io.env),
     modelPort: createHighIntensityCliPort({
       cwd: parsed.projectDir,
       env: io.env,
@@ -441,6 +445,23 @@ async function runHighIntensityCommand(
       + `證據層：${readBack.recordPath}\n`,
   );
   return 0;
+}
+
+function highIntensitySource(
+  env: NodeJS.ProcessEnv,
+): SourceLineage | undefined {
+  const workspace = env.HERDR_WORKSPACE_ID;
+  const tabId = env.HERDR_TAB_ID;
+  const paneId = env.HERDR_PANE_ID;
+  if (!workspace || !tabId || !paneId) return undefined;
+  const stable = `${workspace}:${tabId}:${paneId}`;
+  return {
+    taskId: env.ACM_SOURCE_TASK_ID ?? stable,
+    runId: env.ACM_SOURCE_RUN_ID ?? stable,
+    workspace,
+    tabId,
+    paneId,
+  };
 }
 
 async function runHighIntensityPaneCommand(

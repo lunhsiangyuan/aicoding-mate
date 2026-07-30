@@ -1,12 +1,22 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import {
+  createFirstmateNativeReviewDecision,
+  workflowDispatchIdempotencyKey,
+} from "../authority/firstmate-decisions.ts";
 import {
   parseHerdrBranchContext,
   type BranchFailureReason,
   type ParsedHerdrBranchContext,
 } from "../branch/index.ts";
+import {
+  assertWorkflowDecisionEnvelope,
+  type WorkflowDecisionEnvelope,
+  type WorkflowRoleAssignment,
+} from "../contracts/index.ts";
 import {
   createReviewCapsule,
   type CodexAppServerReviewPort,
@@ -14,6 +24,7 @@ import {
   type ReviewCapsuleFailureReason,
   type ReviewCapsuleInput,
 } from "../review/index.ts";
+import { FileRunRegistry, type RegistryLease } from "../runtime/run-registry.ts";
 import {
   createCodexAppServerReviewPort,
   type CodexAppServerRuntimeOptions,
@@ -88,6 +99,8 @@ export type CodexReviewCommandFailureReason =
   | "firstmate_source_run_not_found"
   | "app_server_unavailable"
   | "capsule_persist_failed"
+  | "canonical_review_active"
+  | "canonical_review_requires_reconciliation"
   | ReviewCapsuleFailureReason;
 
 export type CodexReviewCommandResult =
@@ -96,6 +109,7 @@ export type CodexReviewCommandResult =
       readonly capsulePath: string;
       readonly capsule: ReviewCapsule;
       readonly desktopLaunch: CodexReviewDesktopLaunchStatus;
+      readonly dedupeStatus: "new" | "coalesced_completed";
     }
   | {
       readonly ok: false;
@@ -113,6 +127,7 @@ interface BasicHerdrSelection {
 export async function runCodexReviewFromHerdrSelection(
   options: CodexReviewCommandOptions,
 ): Promise<CodexReviewCommandResult> {
+  const now = options.now ?? (() => new Date().toISOString());
   const stateDir = resolveStateDir(options.cwd, options.env);
   const basic = parseBasicHerdrSelection(options.contextJson);
   if (!basic.ok) return fail(basic.reason);
@@ -138,14 +153,119 @@ export async function runCodexReviewFromHerdrSelection(
   );
   if (!enriched.ok) return fail(enriched.reason);
 
-  const capsuleInput = reviewCapsuleInput(enriched.value, options.now);
-  const appServerOptions = codexAppServerOptions(options);
+  const model =
+    nonEmpty(options.env.ACM_CODEX_REVIEW_MODEL) ?? "gpt-5.6-sol";
+  const reviewer: WorkflowRoleAssignment = {
+    role: "reviewer",
+    alias: "openai-native-reviewer",
+    provider: "openai",
+    family: "openai",
+    resolvedModel: model,
+    capabilityTier: "architecture",
+    reason:
+      "Firstmate assigns Codex native review so the adapter only executes an exact reviewer assignment.",
+  };
+  const intentHash = sha256(JSON.stringify({
+    source: enriched.value.source,
+    selectedText: enriched.value.selectedText,
+    target: "herdr-selection",
+  }));
+  const workflowDecision = createFirstmateNativeReviewDecision({
+    intentHash,
+    configVersion: "native-review-v0.2",
+    source: enriched.value.source,
+    reviewer,
+  });
+  const registry = new FileRunRegistry({
+    rootDir: join(stateDir, "run-registry"),
+  });
+  const opened = registry.openOrCreateRun({
+    intent: {
+      workflow: "native-review",
+      projectDir: resolve(options.cwd),
+      task: "Review the selected Herdr context.",
+      source: enriched.value.source,
+      inputs: {
+        intentHash,
+        selectedTextHash: sha256(enriched.value.selectedText),
+      },
+      decisionVersion: workflowDecision.workflowDecisionId,
+    },
+    owner: `native-review:${process.pid}:${randomUUID()}`,
+    leaseTtlMs: parsePositiveInteger(
+      options.env.ACM_RUN_LEASE_TTL_MS,
+      900_000,
+    ),
+    now: now(),
+  });
+  const dispatchKey = workflowDispatchIdempotencyKey(
+    opened.run.runId,
+    workflowDecision.decisionHash,
+    "reviewer",
+    null,
+  );
+  const capsuleInput = reviewCapsuleInput(
+    enriched.value,
+    workflowDecision,
+    opened.run.runId,
+    dispatchKey,
+    now,
+  );
+  if (opened.kind === "coalesced_completed") {
+    const artifact = opened.run.completedArtifact;
+    if (artifact === null) {
+      return fail("canonical_review_requires_reconciliation");
+    }
+    const capsule = readCompletedCapsule(
+      artifact.path,
+      artifact.hash,
+      opened.run.runId,
+      dispatchKey,
+    );
+    if (capsule === null) {
+      return fail("canonical_review_requires_reconciliation");
+    }
+    const desktopLaunch = await launchReviewDesktop(
+      capsule,
+      options,
+      ports.launchDesktop,
+    );
+    return {
+      ok: true,
+      capsulePath: artifact.path,
+      capsule,
+      desktopLaunch,
+      dedupeStatus: "coalesced_completed",
+    };
+  }
+  if (opened.kind !== "created") {
+    return fail(
+      opened.kind === "coalesced_active"
+        ? "canonical_review_active"
+        : "canonical_review_requires_reconciliation",
+    );
+  }
+  const lease = opened.lease;
+  registry.recordDispatch(lease, {
+    idempotencyKey: dispatchKey,
+    target: reviewer.resolvedModel,
+    receiptPath: null,
+    accepted: false,
+    now: now(),
+  });
+  const appServerOptions = codexAppServerOptions(
+    options,
+    workflowDecision,
+    dispatchKey,
+  );
   const createAppServer =
     ports.createAppServerReviewPort ?? createCodexAppServerReviewPort;
   let appServer: DisposableCodexReviewPort;
   try {
     appServer = createAppServer(appServerOptions);
   } catch {
+    markReviewUnknown(registry, lease, now, "app_server_constructor_failed");
+    releaseReviewLease(registry, lease);
     return fail("app_server_unavailable");
   }
 
@@ -153,7 +273,22 @@ export async function runCodexReviewFromHerdrSelection(
     const capsuleResult = await createReviewCapsule(capsuleInput, {
       appServer,
     });
-    if (!capsuleResult.ok) return fail(capsuleResult.reason);
+    if (!capsuleResult.ok) {
+      markReviewUnknown(
+        registry,
+        lease,
+        now,
+        `codex_review_${capsuleResult.reason}`,
+      );
+      return fail(capsuleResult.reason);
+    }
+    registry.acceptDispatch(lease, {
+      idempotencyKey: dispatchKey,
+      target: capsuleResult.capsule.codex.reviewThreadId,
+      receiptPath: null,
+      now: now(),
+    });
+    registry.markRunning(lease, { now: now() });
 
     const capsulePath = join(
       stateDir,
@@ -163,36 +298,40 @@ export async function runCodexReviewFromHerdrSelection(
     try {
       writeJsonAtomic(capsulePath, capsuleResult.capsule);
     } catch {
+      markReviewUnknown(registry, lease, now, "capsule_persist_failed");
       return fail("capsule_persist_failed");
     }
-
-    const launchReceipt = await (
-      ports.launchDesktop ?? defaultLaunchDesktop
-    )({
-      url: capsuleResult.capsule.codex.desktopUrl,
-      reviewThreadId: capsuleResult.capsule.codex.reviewThreadId,
-      cwd: options.cwd,
-      env: options.env,
+    const current = registry.readRun(opened.run.runId);
+    const attempt = current?.attempts.at(-1);
+    if (attempt === undefined) {
+      markReviewUnknown(registry, lease, now, "registry_attempt_missing");
+      return fail("canonical_review_requires_reconciliation");
+    }
+    registry.completeAttempt(lease, {
+      readback: {
+        status: "found",
+        runId: opened.run.runId,
+        attemptId: attempt.id,
+        artifactPath: capsulePath,
+        artifactHash: sha256(readFileSync(capsulePath, "utf8")),
+      },
+      now: now(),
     });
 
     return {
       ok: true,
       capsulePath,
       capsule: capsuleResult.capsule,
-      desktopLaunch: launchReceipt.requested
-        ? {
-            status: "requested_unverified",
-            url: capsuleResult.capsule.codex.desktopUrl,
-            reason: null,
-          }
-        : {
-            status: "request_failed",
-            url: capsuleResult.capsule.codex.desktopUrl,
-            reason: launchReceipt.reason,
-          },
+      desktopLaunch: await launchReviewDesktop(
+        capsuleResult.capsule,
+        options,
+        ports.launchDesktop,
+      ),
+      dedupeStatus: "new",
     };
   } finally {
     await appServer.dispose();
+    releaseReviewLease(registry, lease);
   }
 }
 
@@ -200,9 +339,15 @@ export const runCodexReviewCommand = runCodexReviewFromHerdrSelection;
 
 function reviewCapsuleInput(
   parsed: ParsedHerdrBranchContext,
-  now: (() => string) | undefined,
+  workflowDecision: WorkflowDecisionEnvelope,
+  canonicalRunId: string,
+  idempotencyKey: string,
+  now: () => string,
 ): ReviewCapsuleInput {
   return {
+    workflowDecision,
+    canonicalRunId,
+    idempotencyKey,
     source: {
       taskId: parsed.source.taskId,
       runId: parsed.source.runId,
@@ -234,13 +379,23 @@ function reviewCapsuleInput(
 
 function codexAppServerOptions(
   options: CodexReviewCommandOptions,
+  workflowDecision: WorkflowDecisionEnvelope,
+  idempotencyKey: string,
 ): CodexAppServerRuntimeOptions {
   const command = nonEmpty(options.env.ACM_CODEX_APP_SERVER_COMMAND);
   const args = nonEmpty(options.env.ACM_CODEX_APP_SERVER_ARGS);
   return {
     cwd: options.cwd,
-    env: options.env,
-    model: nonEmpty(options.env.ACM_CODEX_REVIEW_MODEL) ?? "gpt-5.6-sol",
+    env: {
+      ...options.env,
+      ACM_WORKFLOW_DECISION_ID: workflowDecision.workflowDecisionId,
+      ACM_DECISION_HASH: workflowDecision.decisionHash,
+      ACM_STAGE_ID: "reviewer",
+      ACM_IDEMPOTENCY_KEY: idempotencyKey,
+    },
+    model: workflowDecision.roleAssignments.find(
+      (assignment) => assignment.role === "reviewer",
+    )?.resolvedModel ?? "",
     threadConfig: {
       web_search: "disabled",
       mcp_servers: {},
@@ -255,6 +410,109 @@ function codexAppServerOptions(
     ...(command === null ? {} : { command }),
     ...(args === null ? {} : { args: splitArgs(args) }),
   };
+}
+
+async function launchReviewDesktop(
+  capsule: ReviewCapsule,
+  options: CodexReviewCommandOptions,
+  runner: CodexReviewDesktopLaunchRunner | undefined,
+): Promise<CodexReviewDesktopLaunchStatus> {
+  const launchReceipt = await (runner ?? defaultLaunchDesktop)({
+    url: capsule.codex.desktopUrl,
+    reviewThreadId: capsule.codex.reviewThreadId,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  return launchReceipt.requested
+    ? {
+        status: "requested_unverified",
+        url: capsule.codex.desktopUrl,
+        reason: null,
+      }
+    : {
+        status: "request_failed",
+        url: capsule.codex.desktopUrl,
+        reason: launchReceipt.reason,
+      };
+}
+
+function markReviewUnknown(
+  registry: FileRunRegistry,
+  lease: RegistryLease,
+  now: () => string,
+  reason: string,
+): void {
+  registry.markUnknownOutcome(lease, {
+    reason,
+    readback: {
+      status: "mismatch",
+      checkedAt: now(),
+      reason: "review_thread_identity_or_artifact_not_fully_read_back",
+    },
+    now: now(),
+  });
+}
+
+function releaseReviewLease(
+  registry: FileRunRegistry,
+  lease: RegistryLease,
+): void {
+  try {
+    registry.releaseLease(lease);
+  } catch {
+  }
+}
+
+function readCompletedCapsule(
+  path: string,
+  expectedHash: string,
+  expectedRunId: string,
+  expectedIdempotencyKey: string,
+): ReviewCapsule | null {
+  try {
+    const contents = readFileSync(path, "utf8");
+    if (sha256(contents) !== expectedHash) return null;
+    const value: unknown = JSON.parse(contents);
+    if (!isReviewCapsule(value)) return null;
+    if (
+      value.authority.canonicalRunId !== expectedRunId
+      || value.authority.idempotencyKey !== expectedIdempotencyKey
+    ) {
+      return null;
+    }
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function isReviewCapsule(value: unknown): value is ReviewCapsule {
+  if (!isRecord(value)) return false;
+  if (
+    value.capsuleVersion !== 1
+    || typeof value.capsuleId !== "string"
+    || !isRecord(value.codex)
+    || typeof value.codex.reviewThreadId !== "string"
+    || typeof value.codex.desktopUrl !== "string"
+    || !isRecord(value.authority)
+    || value.authority.workflowAuthority !== "firstmate_verified"
+    || value.authority.runtimeAuthority
+      !== "canonical_run_registry_verified"
+    || typeof value.authority.canonicalRunId !== "string"
+    || typeof value.authority.idempotencyKey !== "string"
+  ) {
+    return false;
+  }
+  try {
+    assertWorkflowDecisionEnvelope(value.workflowDecision);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseBasicHerdrSelection(
@@ -357,6 +615,10 @@ function splitArgs(value: string): readonly string[] {
     .split(" ")
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function fail(

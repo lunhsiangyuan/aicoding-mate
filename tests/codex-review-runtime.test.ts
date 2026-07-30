@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
+import { createFirstmateNativeReviewDecision } from "../src/authority/firstmate-decisions.ts";
 import { sourceLineageHash, type SourceLineage } from "../src/contracts/index.ts";
 import {
   createCodexAppServerReviewPort,
@@ -30,7 +31,33 @@ const lineage: SourceLineage = {
   paneId: "pane-1",
 };
 
+const workflowDecision = createFirstmateNativeReviewDecision({
+  intentHash: "2".repeat(64),
+  configVersion: "native-review-v0.2",
+  source: lineage,
+  reviewer: {
+    role: "reviewer",
+    alias: "openai-native-reviewer",
+    provider: "openai",
+    family: "openai",
+    resolvedModel: "gpt-5.6-sol",
+    capabilityTier: "architecture",
+    reason: "test reviewer",
+  },
+});
+const exactAssignment = workflowDecision.roleAssignments.find(
+  (assignment) => assignment.role === "reviewer",
+);
+if (exactAssignment === undefined) {
+  throw new Error("reviewer assignment missing");
+}
+
 const request: CodexReviewStartRequest = {
+  workflowDecisionId: workflowDecision.workflowDecisionId,
+  decisionHash: workflowDecision.decisionHash,
+  stageId: "reviewer",
+  idempotencyKey: "dispatch-native-review",
+  exactAssignment,
   source: {
     taskId: "task-1",
     runId: "run-1",
@@ -51,6 +78,9 @@ const request: CodexReviewStartRequest = {
 };
 
 const capsuleInput: ReviewCapsuleInput = {
+  workflowDecision,
+  canonicalRunId: "run-canonical-review",
+  idempotencyKey: request.idempotencyKey,
   source: request.source,
   target: request.target,
   selection: request.selection,

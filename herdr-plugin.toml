@@ -1,8 +1,8 @@
 id = "ai-coding-mate"
 name = "AI Coding Mate"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.7.0"
-description = "Open a runtime-read diagnostic pane for AI Coding Mate."
+description = "Open the Firstmate workflow and runtime authority control layer."
 platforms = ["macos", "linux"]
 
 [[actions]]

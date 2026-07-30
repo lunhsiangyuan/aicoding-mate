@@ -8,7 +8,7 @@ AI Coding Mate 是 Herdr 裡的一個架構控制入口：
 2. Firstmate 負責編排 Codex、Claude、Grok 等模型。
 3. 你先看到結論、影響與下一步；證據和技術細節留在第二層。
 
-v0.2 的單一 Workflow Authority 與 canonical Run Registry 已列入規格，但尚未宣稱完成。
+v0.2 已啟用單一 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
 
 ## 安裝與從 Herdr 開啟
 
@@ -172,14 +172,32 @@ export ACM_CODEX_REVIEW_REASONING_EFFORT=high
 
 需要稽核時才打開 `evidence:` 指向的 JSON。若畫面顯示 `BLOCKED`，代表成功條件未被證明；不要只看 worker 曾經啟動或 terminal 沒有報錯。
 
-## v0.2 會改變什麼
+## v0.2 現在如何運作
 
 v0.2 有兩個核心：
 
 - Workflow Authority：Firstmate 是 Author、Reviewer、Judge、Report Composer 與 fallback 的唯一決策者。
 - Runtime Authority：同一 intent 只對應一個 canonical run；重送、timeout、crash 都先經 registry reconciliation。
 
-在 v0.2 完成前，v0.1 的 individual durable records 仍可能無法阻止跨程序重複 dispatch。這是已知架構限制，不是使用方式問題。
+你通常不需要看 registry。只有想稽核或排錯時，才查看：
+
+```text
+state/aicoding-mate/run-registry/runs/<canonical-run-id>/
+├── projection.json
+├── events.jsonl
+└── lease/lease.json
+```
+
+`projection.json` 是目前 canonical 狀態；`events.jsonl` 是不可覆寫的 hash-chain 歷史。若狀態是 `unknown_outcome`，代表外部工作可能已被接受但 receipt 未完整保存，系統會先 read back，不會冒險派第二次。
+
+受管 workflow 的結果會帶兩個 authority 標記：
+
+```text
+workflowAuthority: firstmate_verified
+runtimeAuthority: canonical_run_registry_verified
+```
+
+這兩個標記只有在 decision、artifact、registry 與 lineage 互相吻合時成立。Quick 是 Firstmate 的下游 primitive，接收同一個 idempotency key；Context Branch 是一次性確認 handoff，不會成為另一個決策者。
 
 ## 排錯
 
@@ -196,5 +214,7 @@ bun bin/aicoding-mate doctor
 - `app_server_unavailable`：Codex app-server 未啟動、timeout 或協定回讀失敗。
 - `firstmate_source_run_not_found`：selection 不屬於可重新解析的 Firstmate source run。
 - `durable_readback_failed`：record 未成功寫入或內容不符合 schema。
+- `run_lease_unavailable`：同一 canonical run 已有另一個程序持有執行權；目前程序不會重複派工。
+- `unknown_outcome`：外部接受狀態不明；必須先完成 read-back reconciliation。
 
 系統遇到這些狀態會 fail closed，不會把部分完成包裝成成功。

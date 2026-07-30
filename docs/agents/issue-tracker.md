@@ -37,9 +37,9 @@ Do not close or modify an unrelated parent issue. Do not mark a ticket complete 
 #4 + #5 + #6 + #7 ────────────────────────────────────────────────────────────────> #8
 ```
 
-## v0.2 draft tickets
+## v0.2 local tickets
 
-這三張是本地已核准規格，尚未自動發布到 GitHub Issues。
+這三張是本地已核准並實作的規格；沒有把完成狀態自動發布到 GitHub Issues。
 
 ```text
 V2-01 Firstmate Workflow Authority
@@ -49,12 +49,14 @@ V2-01 Firstmate Workflow Authority
 
 ### V2-01 Firstmate Workflow Authority
 
+- Status：implemented，等待 release evidence 一併封存。
 - Owner：Control Plane
 - Outcome：Firstmate 成為 recipe、角色、model、fallback、Judge 與 Report Composer 的唯一 decision writer。
 - Acceptance：Adapter 只執行 immutable assignment；availability 改變必須產生新 decision version。
 
 ### V2-02 Canonical Run Registry
 
+- Status：implemented，unit／integration gate 通過。
 - Owner：Runtime
 - Blocked by：V2-01
 - Outcome：stable idempotency、canonical run、attempt、outbox、lease、reconciliation 與 append-only lineage。
@@ -62,7 +64,8 @@ V2-01 Firstmate Workflow Authority
 
 ### V2-03 Authority migration gate
 
+- Status：core managed workflows implemented，real-surface evidence in progress。
 - Owner：Integration
 - Blocked by：V2-01、V2-02
-- Outcome：所有 v0.1 workflow 接到同一 decision/run authority。
-- Acceptance：以先前重複 Standard dispatch 作實機回歸，通過前 authority 欄位保持 deferred。
+- Outcome：Standard、Adversarial、Research、Codex Review 接到同一 decision/run authority；Quick 與 Context Branch 分別是帶 idempotency 的下游 primitive 與一次性 lineage handoff。
+- Acceptance：以先前重複 Standard dispatch 作實機回歸；只有新 v0.2 records 可在完整 read-back 後標示 verified。

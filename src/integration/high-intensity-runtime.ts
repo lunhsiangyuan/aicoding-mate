@@ -4,11 +4,24 @@ import { basename, dirname, join, resolve } from "node:path";
 
 import {
   assertDecisionReadyReport,
+  assertWorkflowDecisionEnvelope,
+  lookupExactStageAssignment,
   type AvailabilitySnapshot,
   type DecisionReadyReport,
   type RoleAssignment,
   type RoutingDecision,
+  type SourceLineage,
+  type WorkflowDecisionEnvelope,
 } from "../contracts/index.ts";
+import {
+  createFirstmateWorkflowDecision,
+  workflowDispatchIdempotencyKey,
+} from "../authority/firstmate-decisions.ts";
+import {
+  FileRunRegistry,
+  type RegistryLease,
+  type RunProjection,
+} from "../runtime/run-registry.ts";
 import {
   composeHighIntensityReport,
   partitionRecallFirstResearch,
@@ -37,6 +50,10 @@ export interface HighIntensityModelRequest {
   readonly contextId: string;
   readonly phase: HighIntensityCallPhase;
   readonly round: number | null;
+  readonly workflowDecisionId: string;
+  readonly decisionHash: string;
+  readonly stageId: HighIntensityCallPhase;
+  readonly idempotencyKey: string;
 }
 
 export interface HighIntensityModelResult {
@@ -60,10 +77,13 @@ export interface HighIntensityCallRecord {
   readonly family: string;
   readonly model: string;
   readonly prompt: string;
+  readonly workflowDecisionId: string;
+  readonly decisionHash: string;
+  readonly idempotencyKey: string;
 }
 
 export interface HighIntensityRunRecord {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly id: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -72,6 +92,7 @@ export interface HighIntensityRunRecord {
   readonly inputHash: string;
   readonly availability: AvailabilitySnapshot;
   readonly routingDecision: RoutingDecision | null;
+  readonly workflowDecision: WorkflowDecisionEnvelope | null;
   readonly calls: readonly HighIntensityCallRecord[];
   readonly research: ResearchPartition | null;
   readonly coverage: CoverageReview | null;
@@ -79,9 +100,10 @@ export interface HighIntensityRunRecord {
   readonly report: DecisionReadyReport | null;
   readonly blockers: readonly string[];
   readonly authority: {
-    readonly workflowAuthority: "v0.2_deferred";
-    readonly runtimeAuthority: "v0.2_deferred";
-    readonly limitation: string;
+    readonly workflowAuthority: "firstmate_verified";
+    readonly runtimeAuthority: "canonical_run_registry_verified";
+    readonly canonicalRunId: string | null;
+    readonly idempotencyKey: string | null;
   };
   readonly recordPath: string;
 }
@@ -90,13 +112,21 @@ export interface HighIntensityRunOptions {
   readonly input: HighIntensityInput;
   readonly availability: AvailabilitySnapshot;
   readonly stateDir: string;
+  readonly projectDir?: string;
   readonly modelPort: HighIntensityModelPort;
+  readonly recipe?: "adversarial" | "research";
+  readonly source?: SourceLineage;
   readonly now?: () => string;
 }
 
 export interface HighIntensityRunResult {
   readonly ok: boolean;
   readonly record: HighIntensityRunRecord;
+  readonly dedupeStatus:
+    | "new"
+    | "coalesced_active"
+    | "coalesced_completed"
+    | "reconciliation_required";
 }
 
 interface AuthorDocument {
@@ -111,20 +141,18 @@ interface ResearchDocument {
   readonly observations: readonly DiscoveryObservation[];
 }
 
-const authorityLimitation =
-  "v0.1 deterministic port-driven runtime; unified Workflow Authority and durable Runtime Authority are v0.2 deferred";
-
 export async function createHighIntensityRun(
   options: HighIntensityRunOptions,
 ): Promise<HighIntensityRunResult> {
   const now = options.now ?? (() => new Date().toISOString());
   const createdAt = now();
-  const id = `high-intensity-${compactTimestamp(createdAt)}-${randomUUID()}`;
-  const recordPath = join(resolve(options.stateDir), "high-intensity-runs", `${id}.json`);
+  const stateDir = resolve(options.stateDir);
   const routed = routeHighIntensityWorkflow(options.input, options.availability);
-  const base: HighIntensityRunRecord = {
-    schemaVersion: 1,
-    id,
+  const provisionalId =
+    `high-intensity-invalid-${compactTimestamp(createdAt)}-${randomUUID()}`;
+  const provisional: HighIntensityRunRecord = {
+    schemaVersion: 2,
+    id: provisionalId,
     createdAt,
     updatedAt: createdAt,
     status: "blocked",
@@ -132,6 +160,7 @@ export async function createHighIntensityRun(
     inputHash: inputHash(options.input),
     availability: options.availability,
     routingDecision: routed.status === "resolved" ? routed.decision : null,
+    workflowDecision: null,
     calls: [],
     research: null,
     coverage: null,
@@ -139,149 +168,357 @@ export async function createHighIntensityRun(
     report: null,
     blockers: [],
     authority: {
-      workflowAuthority: "v0.2_deferred",
-      runtimeAuthority: "v0.2_deferred",
-      limitation: authorityLimitation,
+      workflowAuthority: "firstmate_verified",
+      runtimeAuthority: "canonical_run_registry_verified",
+      canonicalRunId: null,
+      idempotencyKey: null,
     },
-    recordPath,
+    recordPath: join(
+      stateDir,
+      "high-intensity-runs",
+      `${provisionalId}.json`,
+    ),
   };
 
   if (routed.status !== "resolved") {
-    return blocked(base, now, `routing_${routed.status}:${routed.reason}`);
-  }
-
-  const author = assignmentFor(routed.decision, "author");
-  const challenger = assignmentFor(routed.decision, "challenger");
-  const judge = assignmentFor(routed.decision, "judge");
-  if (!author || !challenger || !judge) {
-    return blocked(base, now, "routing_assignment_missing");
-  }
-
-  const calls: HighIntensityCallRecord[] = [];
-  const researchResult = await executeModel({
-    port: options.modelPort,
-    assignment: author,
-    prompt: buildResearchPrompt(options.input),
-    contextId: `${id}:research`,
-    phase: "research",
-    round: null,
-    calls,
-  });
-  if (!researchResult.ok) return blocked({ ...base, calls }, now, researchResult.reason);
-  const researchDocument = parseResearchDocument(researchResult.rawOutput);
-  if (!researchDocument) return blocked({ ...base, calls }, now, "research_json_invalid");
-  const research = partitionRecallFirstResearch(researchDocument.observations);
-  const coverage = reviewCoverage(options.input.subquestions, research);
-
-  const rounds: AdversarialRound[] = [];
-  for (const round of [1, 2]) {
-    const authorResult = await executeModel({
-      port: options.modelPort,
-      assignment: author,
-      prompt: buildAuthorPrompt(options.input, research, coverage, round),
-      contextId: `${id}:round-${round}:author`,
-      phase: "author",
-      round,
-      calls,
-    });
-    if (!authorResult.ok) {
-      return blocked({ ...base, calls, research, coverage }, now, authorResult.reason);
-    }
-    const authorDocument = parseAuthorDocument(authorResult.rawOutput);
-    if (!authorDocument) {
-      return blocked({ ...base, calls, research, coverage }, now, "author_json_invalid");
-    }
-
-    const challengerResult = await executeModel({
-      port: options.modelPort,
-      assignment: challenger,
-      prompt: buildChallengerPrompt(options.input, research, coverage, round, authorDocument.claim),
-      contextId: `${id}:round-${round}:challenger`,
-      phase: "challenger",
-      round,
-      calls,
-    });
-    if (!challengerResult.ok) {
-      return blocked({ ...base, calls, research, coverage }, now, challengerResult.reason);
-    }
-    const challengerDocument = parseChallengerDocument(challengerResult.rawOutput);
-    if (!challengerDocument) {
-      return blocked({ ...base, calls, research, coverage }, now, "challenger_json_invalid");
-    }
-
-    const judgeResult = await executeModel({
-      port: options.modelPort,
-      assignment: judge,
-      prompt: buildJudgePrompt(
-        options.input,
-        research,
-        coverage,
-        round,
-        authorDocument.claim,
-        challengerDocument.counterexample,
-      ),
-      contextId: `${id}:round-${round}:judge`,
-      phase: "judge",
-      round,
-      calls,
-    });
-    if (!judgeResult.ok) {
-      return blocked({ ...base, calls, research, coverage }, now, judgeResult.reason);
-    }
-    const judgeDocument = parseJudgeDocument(judgeResult.rawOutput);
-    if (!judgeDocument) {
-      return blocked({ ...base, calls, research, coverage }, now, "judge_json_invalid");
-    }
-
-    rounds.push({
-      round,
-      authorClaim: authorDocument.claim,
-      challengerCounterexample: challengerDocument.counterexample,
-      judge: judgeDocument,
-    });
-    if (judgeDocument.accepted) break;
-  }
-
-  let adversarial: AdversarialReviewResult;
-  try {
-    adversarial = runAdversarialReview(rounds, 2);
-  } catch (error) {
     return blocked(
-      { ...base, calls, research, coverage },
+      provisional,
       now,
-      error instanceof Error ? error.message : "adversarial_round_invalid",
+      `routing_${routed.status}:${routed.reason}`,
     );
   }
 
-  const report = composeHighIntensityReport({
-    input: options.input,
-    routingDecision: routed.decision,
+  const recipe = options.recipe ?? "adversarial";
+  const source = options.source ?? directSourceLineage(options.input);
+  const workflowDecision = createFirstmateWorkflowDecision({
+    recipe,
+    intentHash: inputHash(options.input),
+    configVersion:
+      options.input.configVersionHash ?? `${recipe}-high-intensity-v0.2`,
     availability: options.availability,
-    research,
-    coverage,
-    adversarial,
+    routingDecision: routed.decision,
+    source,
   });
-  try {
-    assertDecisionReadyReport(report);
-  } catch (error) {
-    return blocked(
-      { ...base, calls, research, coverage, adversarial, report },
-      now,
-      error instanceof Error ? error.message : "report_contract_invalid",
-    );
+  const registry = new FileRunRegistry({
+    rootDir: join(stateDir, "run-registry"),
+  });
+  const opened = registry.openOrCreateRun({
+    intent: {
+      workflow: recipe,
+      projectDir: resolve(options.projectDir ?? stateDir),
+      task: normalizeText(options.input.task),
+      source,
+      inputs: {
+        subquestions: options.input.subquestions.map(normalizeText),
+        recipe,
+      },
+      availabilitySnapshotId: options.availability.id,
+      routingDecisionVersion: routed.decision.requestKey,
+      decisionVersion: workflowDecision.workflowDecisionId,
+    },
+    owner: `high-intensity:${process.pid}:${randomUUID()}`,
+    leaseTtlMs: 900_000,
+    now: createdAt,
+  });
+  const id = `high-intensity-${opened.run.runId.slice(4)}`;
+  const recordPath = join(stateDir, "high-intensity-runs", `${id}.json`);
+  const base: HighIntensityRunRecord = {
+    ...provisional,
+    id,
+    routingDecision: routed.decision,
+    workflowDecision,
+    recordPath,
+    authority: {
+      workflowAuthority: "firstmate_verified",
+      runtimeAuthority: "canonical_run_registry_verified",
+      canonicalRunId: opened.run.runId,
+      idempotencyKey: opened.run.idempotencyKey,
+    },
+  };
+
+  if (opened.kind !== "created") {
+    const existing = readHighIntensityRunRecord(recordPath);
+    if (
+      opened.kind === "coalesced_completed"
+      && existing !== undefined
+      && opened.run.completedArtifact?.path === recordPath
+      && opened.run.completedArtifact.hash === fileSha256(recordPath)
+    ) {
+      return {
+        ok: existing.status === "completed",
+        record: existing,
+        dedupeStatus: "coalesced_completed",
+      };
+    }
+    return {
+      ok: false,
+      record: existing ?? {
+        ...base,
+        blockers: [
+          opened.kind === "coalesced_active"
+            ? "canonical_run_active"
+            : "canonical_run_requires_reconciliation",
+        ],
+      },
+      dedupeStatus:
+        opened.kind === "coalesced_active"
+          ? "coalesced_active"
+          : "reconciliation_required",
+    };
   }
 
-  const record = writeHighIntensityRunRecord({
-    ...base,
-    updatedAt: now(),
-    status: "completed",
-    calls,
-    research,
-    coverage,
-    adversarial,
-    report,
-  });
-  return { ok: true, record };
+  const lease = opened.lease;
+  writeHighIntensityRunRecord(base);
+  const stageAssignment = (stageId: HighIntensityCallPhase): RoleAssignment =>
+    lookupExactStageAssignment(workflowDecision, stageId).roleAssignment;
+  const calls: HighIntensityCallRecord[] = [];
+  try {
+    const researchResult = await executeModel({
+      port: options.modelPort,
+      assignment: stageAssignment("research"),
+      prompt: buildResearchPrompt(options.input),
+      contextId: `${id}:research`,
+      phase: "research",
+      round: null,
+      calls,
+      registry,
+      lease,
+      run: opened.run,
+      workflowDecision,
+      now,
+    });
+    if (!researchResult.ok) {
+      return blockedRegistered(
+        { ...base, calls },
+        now,
+        researchResult.reason,
+        registry,
+        lease,
+        researchResult.registryStatus,
+      );
+    }
+    const researchDocument = parseResearchDocument(researchResult.rawOutput);
+    if (!researchDocument) {
+      return blockedRegistered(
+        { ...base, calls },
+        now,
+        "research_json_invalid",
+        registry,
+        lease,
+        "failed",
+      );
+    }
+    const research = partitionRecallFirstResearch(
+      researchDocument.observations,
+    );
+    const coverage = reviewCoverage(options.input.subquestions, research);
+
+    const rounds: AdversarialRound[] = [];
+    for (const round of [1, 2]) {
+      const authorResult = await executeModel({
+        port: options.modelPort,
+        assignment: stageAssignment("author"),
+        prompt: buildAuthorPrompt(options.input, research, coverage, round),
+        contextId: `${id}:round-${round}:author`,
+        phase: "author",
+        round,
+        calls,
+        registry,
+        lease,
+        run: opened.run,
+        workflowDecision,
+        now,
+      });
+      if (!authorResult.ok) {
+        return blockedRegistered(
+          { ...base, calls, research, coverage },
+          now,
+          authorResult.reason,
+          registry,
+          lease,
+          authorResult.registryStatus,
+        );
+      }
+      const authorDocument = parseAuthorDocument(authorResult.rawOutput);
+      if (!authorDocument) {
+        return blockedRegistered(
+          { ...base, calls, research, coverage },
+          now,
+          "author_json_invalid",
+          registry,
+          lease,
+          "failed",
+        );
+      }
+
+      const challengerResult = await executeModel({
+        port: options.modelPort,
+        assignment: stageAssignment("challenger"),
+        prompt: buildChallengerPrompt(
+          options.input,
+          research,
+          coverage,
+          round,
+          authorDocument.claim,
+        ),
+        contextId: `${id}:round-${round}:challenger`,
+        phase: "challenger",
+        round,
+        calls,
+        registry,
+        lease,
+        run: opened.run,
+        workflowDecision,
+        now,
+      });
+      if (!challengerResult.ok) {
+        return blockedRegistered(
+          { ...base, calls, research, coverage },
+          now,
+          challengerResult.reason,
+          registry,
+          lease,
+          challengerResult.registryStatus,
+        );
+      }
+      const challengerDocument = parseChallengerDocument(
+        challengerResult.rawOutput,
+      );
+      if (!challengerDocument) {
+        return blockedRegistered(
+          { ...base, calls, research, coverage },
+          now,
+          "challenger_json_invalid",
+          registry,
+          lease,
+          "failed",
+        );
+      }
+
+      const judgeResult = await executeModel({
+        port: options.modelPort,
+        assignment: stageAssignment("judge"),
+        prompt: buildJudgePrompt(
+          options.input,
+          research,
+          coverage,
+          round,
+          authorDocument.claim,
+          challengerDocument.counterexample,
+        ),
+        contextId: `${id}:round-${round}:judge`,
+        phase: "judge",
+        round,
+        calls,
+        registry,
+        lease,
+        run: opened.run,
+        workflowDecision,
+        now,
+      });
+      if (!judgeResult.ok) {
+        return blockedRegistered(
+          { ...base, calls, research, coverage },
+          now,
+          judgeResult.reason,
+          registry,
+          lease,
+          judgeResult.registryStatus,
+        );
+      }
+      const judgeDocument = parseJudgeDocument(judgeResult.rawOutput);
+      if (!judgeDocument) {
+        return blockedRegistered(
+          { ...base, calls, research, coverage },
+          now,
+          "judge_json_invalid",
+          registry,
+          lease,
+          "failed",
+        );
+      }
+
+      rounds.push({
+        round,
+        authorClaim: authorDocument.claim,
+        challengerCounterexample: challengerDocument.counterexample,
+        judge: judgeDocument,
+      });
+      if (judgeDocument.accepted) break;
+    }
+
+    let adversarial: AdversarialReviewResult;
+    try {
+      adversarial = runAdversarialReview(rounds, 2);
+    } catch (error) {
+      return blockedRegistered(
+        { ...base, calls, research, coverage },
+        now,
+        error instanceof Error
+          ? error.message
+          : "adversarial_round_invalid",
+        registry,
+        lease,
+        "failed",
+      );
+    }
+
+    const composed = composeHighIntensityReport({
+      input: options.input,
+      routingDecision: routed.decision,
+      availability: options.availability,
+      research,
+      coverage,
+      adversarial,
+    });
+    const report: DecisionReadyReport = {
+      ...composed,
+      evidenceLayer: {
+        ...composed.evidenceLayer,
+        lineage: [
+          `workflow_decision:${workflowDecision.workflowDecisionId}`,
+          `decision_hash:${workflowDecision.decisionHash}`,
+          ...composed.evidenceLayer.lineage,
+        ],
+      },
+    };
+    try {
+      assertDecisionReadyReport(report);
+    } catch (error) {
+      return blockedRegistered(
+        { ...base, calls, research, coverage, adversarial, report },
+        now,
+        error instanceof Error ? error.message : "report_contract_invalid",
+        registry,
+        lease,
+        "failed",
+      );
+    }
+
+    const record = writeHighIntensityRunRecord({
+      ...base,
+      updatedAt: now(),
+      status: "completed",
+      calls,
+      research,
+      coverage,
+      adversarial,
+      report,
+    });
+    registry.completeAttempt(lease, {
+      readback: {
+        status: "found",
+        runId: opened.run.runId,
+        attemptId: activeAttemptId(opened.run),
+        artifactPath: record.recordPath,
+        artifactHash: fileSha256(record.recordPath),
+      },
+      now: now(),
+    });
+    return { ok: true, record, dedupeStatus: "new" };
+  } finally {
+    releaseLeaseIfHeld(registry, lease);
+  }
 }
 
 export function readHighIntensityRunRecord(
@@ -303,10 +540,32 @@ async function executeModel(options: {
   readonly phase: HighIntensityCallPhase;
   readonly round: number | null;
   readonly calls: HighIntensityCallRecord[];
+  readonly registry: FileRunRegistry;
+  readonly lease: RegistryLease;
+  readonly run: RunProjection;
+  readonly workflowDecision: WorkflowDecisionEnvelope;
+  readonly now: () => string;
 }): Promise<
   | { readonly ok: true; readonly rawOutput: string }
-  | { readonly ok: false; readonly reason: string }
+  | {
+      readonly ok: false;
+      readonly reason: string;
+      readonly registryStatus: "failed" | "unknown_outcome";
+    }
 > {
+  const idempotencyKey = workflowDispatchIdempotencyKey(
+    options.run.runId,
+    options.workflowDecision.decisionHash,
+    options.phase,
+    options.round,
+  );
+  options.registry.recordDispatch(options.lease, {
+    idempotencyKey,
+    target: options.assignment.alias,
+    receiptPath: null,
+    accepted: false,
+    now: options.now(),
+  });
   let result: HighIntensityModelResult;
   try {
     result = await options.port.execute({
@@ -315,17 +574,45 @@ async function executeModel(options: {
       contextId: options.contextId,
       phase: options.phase,
       round: options.round,
+      workflowDecisionId: options.workflowDecision.workflowDecisionId,
+      decisionHash: options.workflowDecision.decisionHash,
+      stageId: options.phase,
+      idempotencyKey,
     });
   } catch {
-    return { ok: false, reason: `model_execution_failed:${options.phase}` };
+    options.registry.markUnknownOutcome(options.lease, {
+      reason: `model_execution_unknown_outcome:${options.phase}`,
+      readback: {
+        status: "mismatch",
+        checkedAt: options.now(),
+        reason: "adapter_has_no_verified_downstream_readback",
+      },
+      now: options.now(),
+    });
+    return {
+      ok: false,
+      reason: `model_execution_unknown_outcome:${options.phase}`,
+      registryStatus: "unknown_outcome",
+    };
   }
   if (
     result.alias !== options.assignment.alias ||
     result.family !== options.assignment.family ||
     result.model !== options.assignment.resolvedModel
   ) {
-    return { ok: false, reason: `provenance_mismatch:${options.phase}` };
+    return {
+      ok: false,
+      reason: `provenance_mismatch:${options.phase}`,
+      registryStatus: "failed",
+    };
   }
+  options.registry.acceptDispatch(options.lease, {
+    idempotencyKey,
+    target: `${result.family}:${result.model}`,
+    receiptPath: null,
+    now: options.now(),
+  });
+  options.registry.markRunning(options.lease, { now: options.now() });
   options.calls.push({
     phase: options.phase,
     round: options.round,
@@ -334,15 +621,11 @@ async function executeModel(options: {
     family: result.family,
     model: result.model,
     prompt: options.prompt,
+    workflowDecisionId: options.workflowDecision.workflowDecisionId,
+    decisionHash: options.workflowDecision.decisionHash,
+    idempotencyKey,
   });
   return { ok: true, rawOutput: result.rawOutput };
-}
-
-function assignmentFor(
-  decision: RoutingDecision,
-  role: "author" | "challenger" | "judge",
-): RoleAssignment | undefined {
-  return decision.roleAssignments.find((assignment) => assignment.role === role);
 }
 
 function buildResearchPrompt(input: HighIntensityInput): string {
@@ -543,7 +826,22 @@ function blocked(
       status: "blocked",
       blockers: [...record.blockers, blocker],
     }),
+    dedupeStatus: "new",
   };
+}
+
+function blockedRegistered(
+  record: HighIntensityRunRecord,
+  now: () => string,
+  blocker: string,
+  registry: FileRunRegistry,
+  lease: RegistryLease,
+  registryStatus: "failed" | "unknown_outcome",
+): HighIntensityRunResult {
+  if (registryStatus === "failed") {
+    registry.failAttempt(lease, { reason: blocker, now: now() });
+  }
+  return blocked(record, now, blocker);
 }
 
 function writeHighIntensityRunRecord(
@@ -565,7 +863,7 @@ function isHighIntensityRunRecord(
   }
   const record = value as Record<string, unknown>;
   if (
-    record.schemaVersion !== 1
+    record.schemaVersion !== 2
     || typeof record.id !== "string"
     || !record.id.startsWith("high-intensity-")
     || (record.status !== "blocked" && record.status !== "completed")
@@ -586,9 +884,17 @@ function isHighIntensityRunRecord(
   ) {
     return false;
   }
+  if (record.workflowDecision !== null) {
+    try {
+      assertWorkflowDecisionEnvelope(record.workflowDecision);
+    } catch {
+      return false;
+    }
+  }
   if (record.status === "completed") {
     if (
       record.routingDecision === null
+      || record.workflowDecision === null
       || record.research === null
       || record.coverage === null
       || record.adversarial === null
@@ -639,16 +945,26 @@ function isHighIntensityCallRecord(value: unknown): boolean {
     && typeof call.alias === "string"
     && typeof call.family === "string"
     && typeof call.model === "string"
-    && typeof call.prompt === "string";
+    && typeof call.prompt === "string"
+    && typeof call.workflowDecisionId === "string"
+    && typeof call.decisionHash === "string"
+    && typeof call.idempotencyKey === "string";
 }
 
 function isAuthorityRecord(value: unknown): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const authority = value as Record<string, unknown>;
-  return authority.workflowAuthority === "v0.2_deferred"
-    && authority.runtimeAuthority === "v0.2_deferred"
-    && typeof authority.limitation === "string"
-    && authority.limitation.length > 0;
+  const hasCanonicalIdentity =
+    typeof authority.canonicalRunId === "string"
+    && authority.canonicalRunId.length > 0
+    && typeof authority.idempotencyKey === "string"
+    && authority.idempotencyKey.length > 0;
+  const notReached =
+    authority.canonicalRunId === null
+    && authority.idempotencyKey === null;
+  return authority.workflowAuthority === "firstmate_verified"
+    && authority.runtimeAuthority === "canonical_run_registry_verified"
+    && (hasCanonicalIdentity || notReached);
 }
 
 function isDecisionReadyReportCandidate(
@@ -697,4 +1013,42 @@ function compactTimestamp(value: string): string {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function directSourceLineage(input: HighIntensityInput): SourceLineage {
+  const hash = inputHash(input);
+  return {
+    taskId: `direct-${hash}`,
+    runId: `direct-${hash}`,
+    workspace: "direct",
+    tabId: "direct",
+    paneId: "direct",
+  };
+}
+
+function normalizeText(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function activeAttemptId(run: RunProjection): string {
+  const attempt = run.attempts.at(-1);
+  if (!attempt) throw new Error("run_attempt_missing");
+  return attempt.id;
+}
+
+function releaseLeaseIfHeld(
+  registry: FileRunRegistry,
+  lease: RegistryLease,
+): void {
+  try {
+    registry.releaseLease(lease);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "lease_not_held") {
+      throw error;
+    }
+  }
+}
+
+function fileSha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }

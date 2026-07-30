@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { createFirstmateNativeReviewDecision } from "../src/authority/firstmate-decisions.ts";
 import { sourceLineageHash, type SourceLineage } from "../src/contracts/index.ts";
 import {
   codexThreadUrl,
@@ -19,7 +20,25 @@ const lineage: SourceLineage = {
   paneId: "pane-1",
 };
 
+const workflowDecision = createFirstmateNativeReviewDecision({
+  intentHash: "1".repeat(64),
+  configVersion: "native-review-v0.2",
+  source: lineage,
+  reviewer: {
+    role: "reviewer",
+    alias: "openai-native-reviewer",
+    provider: "openai",
+    family: "openai",
+    resolvedModel: "gpt-5.6-sol",
+    capabilityTier: "architecture",
+    reason: "test reviewer",
+  },
+});
+
 const baseInput: ReviewCapsuleInput = {
+  workflowDecision,
+  canonicalRunId: "run-canonical-review",
+  idempotencyKey: "dispatch-native-review",
   source: {
     taskId: "task-1",
     runId: "run-1",
@@ -125,13 +144,12 @@ describe("Codex Review Capsule core", () => {
     );
     expect(result.capsule.authority).toEqual({
       bridgeMode: "port_driven_lineage_verified",
-      workflowAuthority: "v0_2_deferred",
-      runtimeAuthority: "v0_2_deferred",
-      codexReviewOwnership: "codex_thread_not_firstmate_owned",
+      workflowAuthority: "firstmate_verified",
+      runtimeAuthority: "canonical_run_registry_verified",
+      canonicalRunId: "run-canonical-review",
+      idempotencyKey: "dispatch-native-review",
+      codexReviewOwnership: "firstmate_decision_codex_thread",
     });
-    expect(result.capsule.limitations).toContain(
-      "codex_review_not_firstmate_owned",
-    );
     expect(result.capsule.limitations).toContain(
       "native_annotation_export_unverifiable",
     );
@@ -172,9 +190,7 @@ describe("Codex Review Capsule core", () => {
     expect(result.capsule.limitations).not.toContain(
       "native_annotation_export_unverifiable",
     );
-    expect(result.capsule.limitations).toContain(
-      "workflow_authority_deferred_v0_2",
-    );
+    expect(result.capsule.limitations).toEqual([]);
   });
 
   test("fails closed before app-server calls when parent thread state is paginated or ambiguous", async () => {

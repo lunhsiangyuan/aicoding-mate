@@ -308,3 +308,12 @@ Run Registry 是 execution truth 的唯一持久來源：
 5. report 只接受 registry 中 completed 且 lineage 完整的 artifacts；較新的失敗 attempt 不會遮蔽既有成功 canonical run。
 
 先前實機曾在同一 Standard 目標產生兩筆不同 run。該案例保留為 Runtime Authority 的回歸情境，而不是以「使用者不要重複按」規避。
+
+### v0.2 實作狀態
+
+- `WorkflowDecisionEnvelope` 由 Firstmate 建立並以 canonical hash 驗證；Adapter 只能取得 exact stage assignment。
+- Standard、Adversarial、Research 與 Codex Review 都寫入同一種 canonical Run Registry。
+- 同一 intent 的 active 或 completed 重送會 coalesce；不再建立第二個外部工作。
+- filesystem lease 保護跨程序 writer；event log 使用 append-only hash chain，projection 與完成 artifact 會 strict read-back。
+- Quick 作為 Firstmate 下游 primitive 接收上層 idempotency key；Context Branch 是一次性 lineage handoff，不是自主 workflow。
+- `unknown_outcome` 只有在 read-back 為 `not_found` 後才能開新 attempt；在 provider 無法證明未接受時保持 fail closed。

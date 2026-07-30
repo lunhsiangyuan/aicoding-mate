@@ -236,7 +236,7 @@ Adapter 不得：
 
 ## 9. v0.2 Authority 架構
 
-v0.1 已有 deterministic routing、durable run records 與 fail-closed read-back，但尚未形成跨 workflow 的單一 authority。v0.2 將責任收斂成以下形狀：
+v0.2 已把 deterministic routing、durable run records 與 fail-closed read-back 收斂為單一 authority：
 
 ```mermaid
 flowchart LR
@@ -290,8 +290,10 @@ readBack(dispatchReceipt | idempotencyKey) -> RuntimeObservation
 
 介面刻意沒有 `chooseModel`、`fallback`、`retryWorkflow` 或 `composeReport`。這些都屬於 Firstmate。
 
-### v0.1 與 v0.2 邊界
+### v0.2 實作邊界
 
-- v0.1：每個 workflow 已能留下 durable record，Adapter 可被限制為 exact assignment executor。
-- v0.2：跨 workflow 的 decision envelope、canonical Run Registry、outbox、lease、reconciliation 與下游 idempotency propagation。
-- 在 v0.2 gate 通過前，任何 v0.1 record 中的 `workflowAuthority`／`runtimeAuthority` 都必須維持 `v0.2_deferred`。
+- Standard、Adversarial、Research 與 Codex Review 都先取得 Firstmate decision，再開啟或合併 canonical run。
+- Quick 是 Standard 交給 Firstmate 的執行 primitive；它沿用上層 dispatch idempotency key，完成結果可直接 read back，不再私下做 routing。
+- Context Branch 不派模型角色，只保存 selection lineage、白話解釋與一次性確認 handoff；因此不建立第二個 workflow authority。
+- 目前 Run Registry 使用 filesystem lease、atomic write 與 append-only hash chain。程序在「外部已接受、receipt 尚未持久化」期間中斷時會 fail closed；只有 read-back 證明未派出才允許新 attempt。
+- 這不是跨主機 distributed transaction，也不宣稱 provider 具備 exactly-once；外部 provider 是否支援 idempotency 仍由 receipt/read-back 證據決定。

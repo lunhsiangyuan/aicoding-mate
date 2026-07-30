@@ -79,7 +79,26 @@ describe("Codex review command bridge", () => {
       "appServerOptions",
     );
     expect(capturedOptions.cwd).toBe(root);
-    expect(capturedOptions.env).toEqual({});
+    const propagatedEnv = requireValue(
+      capturedOptions.env ?? null,
+      "appServerEnv",
+    );
+    const workflowDecisionId = requireValue(
+      propagatedEnv.ACM_WORKFLOW_DECISION_ID ?? null,
+      "workflowDecisionId",
+    );
+    const decisionHash = requireValue(
+      propagatedEnv.ACM_DECISION_HASH ?? null,
+      "decisionHash",
+    );
+    const idempotencyKey = requireValue(
+      propagatedEnv.ACM_IDEMPOTENCY_KEY ?? null,
+      "idempotencyKey",
+    );
+    expect(workflowDecisionId).toMatch(/^wfd_/);
+    expect(decisionHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(propagatedEnv.ACM_STAGE_ID).toBe("reviewer");
+    expect(idempotencyKey).toMatch(/^acm-dispatch-/);
     expect(capturedOptions.model).toBe("gpt-5.6-sol");
     expect(capturedOptions.threadConfig).toEqual({
       web_search: "disabled",
@@ -101,6 +120,11 @@ describe("Codex review command bridge", () => {
         paneId: "pane-1",
       },
     });
+    expect(capturedStart.workflowDecisionId).toBe(workflowDecisionId);
+    expect(capturedStart.decisionHash).toBe(decisionHash);
+    expect(capturedStart.idempotencyKey).toBe(idempotencyKey);
+    expect(capturedStart.stageId).toBe("reviewer");
+    expect(capturedStart.exactAssignment.resolvedModel).toBe("gpt-5.6-sol");
     expect(capturedStart.selection).toEqual({
       selectedText: "Review this adapter source.",
       sourceArtifact: "herdr-selection",
@@ -131,6 +155,7 @@ describe("Codex review command bridge", () => {
       env: {},
     });
     expect(disposed).toBe(true);
+    expect(result.dedupeStatus).toBe("new");
   });
 
   test("forwards upstream-decided env policy without choosing workflow or model itself", async () => {
@@ -163,9 +188,12 @@ describe("Codex review command bridge", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(requireValue(captured.appServerOptions, "appServerOptions")).toEqual({
+    const capturedOptions = requireValue(
+      captured.appServerOptions,
+      "appServerOptions",
+    );
+    expect(capturedOptions).toMatchObject({
       cwd: root,
-      env,
       model: "gpt-5.5",
       threadConfig: {
         web_search: "disabled",
@@ -177,6 +205,17 @@ describe("Codex review command bridge", () => {
       command: "/tmp/codex",
       args: ["app-server", "--stdio"],
     });
+    const propagatedEnv = requireValue(
+      capturedOptions.env ?? null,
+      "appServerEnv",
+    );
+    expect(propagatedEnv).toMatchObject(env);
+    expect(propagatedEnv.ACM_WORKFLOW_DECISION_ID).toMatch(/^wfd_/);
+    expect(propagatedEnv.ACM_DECISION_HASH).toMatch(/^[a-f0-9]{64}$/);
+    expect(propagatedEnv.ACM_STAGE_ID).toBe("reviewer");
+    expect(propagatedEnv.ACM_IDEMPOTENCY_KEY).toMatch(
+      /^acm-dispatch-/,
+    );
   });
 
   test("fails closed before app-server when selection is malformed or source binding is missing", async () => {
@@ -292,6 +331,51 @@ describe("Codex review command bridge", () => {
       reason: "open exited 1",
     });
     expect(existsSync(result.capsulePath)).toBe(true);
+  });
+
+  test("coalesces the same completed selection without starting another Codex review", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
+    writeRunRecord(join(root, "state", "aicoding-mate"));
+    let created = 0;
+    let started = 0;
+    let launched = 0;
+    const ports = {
+      createAppServerReviewPort() {
+        created += 1;
+        return fakeReviewPort({
+          onStart() {
+            started += 1;
+          },
+        });
+      },
+      launchDesktop() {
+        launched += 1;
+        return { requested: true as const, reason: null };
+      },
+    };
+    const options = {
+      contextJson: invocation(),
+      cwd: root,
+      env: {},
+      now: () => "2026-07-30T21:00:00.000Z",
+      ports,
+    };
+
+    const first = await runCodexReviewFromHerdrSelection(options);
+    const second = await runCodexReviewFromHerdrSelection(options);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) throw new Error("review should complete");
+    expect(first.dedupeStatus).toBe("new");
+    expect(second.dedupeStatus).toBe("coalesced_completed");
+    expect(second.capsulePath).toBe(first.capsulePath);
+    expect(second.capsule.codex.reviewThreadId).toBe(
+      first.capsule.codex.reviewThreadId,
+    );
+    expect(created).toBe(1);
+    expect(started).toBe(1);
+    expect(launched).toBe(2);
   });
 });
 

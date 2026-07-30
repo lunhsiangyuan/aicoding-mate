@@ -131,10 +131,15 @@ describe("high-intensity runtime", () => {
       entry.startsWith("judge_round:") &&
       entry.includes("first round lacks denominator coverage"),
     )).toBe(true);
-    expect(result.record.report?.evidenceLayer.limitations).toContain(
-      "authority:v0.1 deterministic port-driven core only; unified Workflow Authority and durable Runtime Authority are v0.2 seams",
-    );
-    expect(result.record.authority.limitation).toContain("v0.2 deferred");
+    expect(result.record.workflowDecision?.authority).toBe("firstmate");
+    expect(result.record.authority).toMatchObject({
+      workflowAuthority: "firstmate_verified",
+      runtimeAuthority: "canonical_run_registry_verified",
+    });
+    expect(result.record.calls.every((call) =>
+      call.workflowDecisionId ===
+        result.record.workflowDecision?.workflowDecisionId
+    )).toBe(true);
     expect(readHighIntensityRunRecord(result.record.recordPath)?.id).toBe(result.record.id);
   });
 
@@ -160,7 +165,7 @@ describe("high-intensity runtime", () => {
     expect(requests.length).toBe(1);
   });
 
-  test("fixed-clock concurrent runs keep distinct durable lineage", async () => {
+  test("concurrent duplicate intents coalesce into one canonical run", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
     const now = () => "2026-07-31T01:00:00.000Z";
     const [first, second] = await Promise.all([
@@ -180,12 +185,15 @@ describe("high-intensity runtime", () => {
       }),
     ]);
 
-    expect(first.ok).toBe(true);
-    expect(second.ok).toBe(true);
-    expect(first.record.id).not.toBe(second.record.id);
-    expect(first.record.recordPath).not.toBe(second.record.recordPath);
-    expect(readHighIntensityRunRecord(first.record.recordPath)?.id).toBe(first.record.id);
-    expect(readHighIntensityRunRecord(second.record.recordPath)?.id).toBe(second.record.id);
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+    expect([first.dedupeStatus, second.dedupeStatus]).toContain(
+      "coalesced_active",
+    );
+    expect(first.record.id).toBe(second.record.id);
+    expect(first.record.recordPath).toBe(second.record.recordPath);
+    expect(readHighIntensityRunRecord(first.record.recordPath)?.id).toBe(
+      first.record.id,
+    );
   });
 
   test("read-back rejects truncated or path-mismatched records", async () => {
@@ -231,10 +239,12 @@ describe("high-intensity runtime", () => {
 
     expect(result.ok).toBe(false);
     expect(result.record.status).toBe("blocked");
-    expect(result.record.blockers).toEqual(["model_execution_failed:research"]);
+    expect(result.record.blockers).toEqual([
+      "model_execution_unknown_outcome:research",
+    ]);
     expect(result.record.blockers.join("\n")).not.toContain("secret provider stack trace");
     expect(readHighIntensityRunRecord(result.record.recordPath)?.blockers).toEqual([
-      "model_execution_failed:research",
+      "model_execution_unknown_outcome:research",
     ]);
   });
 

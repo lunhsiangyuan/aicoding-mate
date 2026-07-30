@@ -247,9 +247,9 @@ describe("high-intensity workflow core", () => {
     expect(report.mainReport.nextAction).toBe(
       "整合前需先補齊覆蓋缺口或處理評審拒絕理由。",
     );
-    expect(report.evidenceLayer.limitations).toContain(
-      "authority:v0.1 deterministic port-driven core only; unified Workflow Authority and durable Runtime Authority are v0.2 seams",
-    );
+    expect(report.evidenceLayer.limitations.some((item) =>
+      item.includes("v0.2 seams")
+    )).toBe(false);
     expect(report.evidenceLayer.limitations).toContain(
       "counterexample:obs-candidate:A two-family adversarial pair may expose provider-specific assumptions.",
     );

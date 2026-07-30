@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 
-import { sourceLineageHash, type SourceLineage } from "../contracts/index.ts";
+import {
+  assertWorkflowDecisionEnvelope,
+  lookupExactStageAssignment,
+  sourceLineageHash,
+  type SourceLineage,
+  type WorkflowDecisionEnvelope,
+  type WorkflowRoleAssignment,
+} from "../contracts/index.ts";
 
 export type ReviewDelivery = "inline" | "detached";
 
@@ -28,10 +35,7 @@ export type NativeAnnotationExportStatus = "confirmed" | "unverifiable";
 export type ParentThreadReadState = "complete" | "paginated" | "unknown";
 
 export type ReviewCapsuleLimitation =
-  | "workflow_authority_deferred_v0_2"
-  | "runtime_authority_deferred_v0_2"
-  | "codex_review_not_firstmate_owned"
-  | "native_annotation_export_unverifiable";
+  "native_annotation_export_unverifiable";
 
 export interface ReviewSelection {
   readonly selectedText: string | null;
@@ -53,6 +57,11 @@ export interface ReviewPrompt {
 }
 
 export interface CodexReviewStartRequest {
+  readonly workflowDecisionId: string;
+  readonly decisionHash: string;
+  readonly stageId: "reviewer";
+  readonly idempotencyKey: string;
+  readonly exactAssignment: WorkflowRoleAssignment;
   readonly source: ReviewSource;
   readonly target: ReviewTarget;
   readonly selection: ReviewSelection | null;
@@ -131,6 +140,9 @@ export type CodexDesktopOpenResult =
     };
 
 export interface ReviewCapsuleInput {
+  readonly workflowDecision: WorkflowDecisionEnvelope;
+  readonly canonicalRunId: string;
+  readonly idempotencyKey: string;
   readonly source: ReviewSource;
   readonly target: ReviewTarget;
   readonly selection: ReviewSelection | null;
@@ -159,6 +171,7 @@ export interface ReviewCapsule {
   readonly capsuleVersion: 1;
   readonly capsuleId: string;
   readonly createdAt: string;
+  readonly workflowDecision: WorkflowDecisionEnvelope;
   readonly source: {
     readonly taskId: string;
     readonly runId: string;
@@ -194,9 +207,11 @@ export interface ReviewCapsule {
   };
   readonly authority: {
     readonly bridgeMode: "port_driven_lineage_verified";
-    readonly workflowAuthority: "v0_2_deferred";
-    readonly runtimeAuthority: "v0_2_deferred";
-    readonly codexReviewOwnership: "codex_thread_not_firstmate_owned";
+    readonly workflowAuthority: "firstmate_verified";
+    readonly runtimeAuthority: "canonical_run_registry_verified";
+    readonly canonicalRunId: string;
+    readonly idempotencyKey: string;
+    readonly codexReviewOwnership: "firstmate_decision_codex_thread";
   };
   readonly limitations: readonly ReviewCapsuleLimitation[];
   readonly lineage: {
@@ -298,9 +313,18 @@ export async function createReviewCapsule(
     return fail("parent_thread_ambiguous");
   }
 
+  const reviewerStage = lookupExactStageAssignment(
+    input.workflowDecision,
+    "reviewer",
+  );
   let start: CodexReviewStartReceipt;
   try {
     start = await ports.appServer.startReview({
+      workflowDecisionId: input.workflowDecision.workflowDecisionId,
+      decisionHash: input.workflowDecision.decisionHash,
+      stageId: "reviewer",
+      idempotencyKey: input.idempotencyKey,
+      exactAssignment: reviewerStage.roleAssignment,
       source: input.source,
       target: input.target,
       selection: input.selection,
@@ -376,6 +400,7 @@ export async function createReviewCapsule(
       capsuleVersion: 1,
       capsuleId,
       createdAt,
+      workflowDecision: input.workflowDecision,
       source: {
         taskId: input.source.taskId,
         runId: input.source.runId,
@@ -411,9 +436,11 @@ export async function createReviewCapsule(
       },
       authority: {
         bridgeMode: "port_driven_lineage_verified",
-        workflowAuthority: "v0_2_deferred",
-        runtimeAuthority: "v0_2_deferred",
-        codexReviewOwnership: "codex_thread_not_firstmate_owned",
+        workflowAuthority: "firstmate_verified",
+        runtimeAuthority: "canonical_run_registry_verified",
+        canonicalRunId: input.canonicalRunId,
+        idempotencyKey: input.idempotencyKey,
+        codexReviewOwnership: "firstmate_decision_codex_thread",
       },
       limitations: capsuleLimitations(readBack.nativeAnnotationExport),
       lineage: {
@@ -454,6 +481,24 @@ function validateReviewCapsuleInput(
   }
   if (input.prompt.text.trim().length === 0) return fail("prompt_missing");
   if (!hasReviewTarget(input.target)) return fail("review_target_missing");
+  if (
+    input.canonicalRunId.trim().length === 0
+    || input.idempotencyKey.trim().length === 0
+  ) {
+    return fail("source_run_missing");
+  }
+  try {
+    assertWorkflowDecisionEnvelope(input.workflowDecision);
+  } catch {
+    return fail("source_run_lineage_mismatch");
+  }
+  if (
+    input.workflowDecision.recipe.id !== "native-review"
+    || sourceLineageHash(input.workflowDecision.sourceLineage)
+      !== sourceLineageHash(input.source.lineage)
+  ) {
+    return fail("source_run_lineage_mismatch");
+  }
   return { ok: true };
 }
 
@@ -481,11 +526,7 @@ function sha256(value: string): string {
 function capsuleLimitations(
   nativeAnnotationExport: NativeAnnotationExportStatus,
 ): readonly ReviewCapsuleLimitation[] {
-  const limitations: ReviewCapsuleLimitation[] = [
-    "workflow_authority_deferred_v0_2",
-    "runtime_authority_deferred_v0_2",
-    "codex_review_not_firstmate_owned",
-  ];
+  const limitations: ReviewCapsuleLimitation[] = [];
   if (nativeAnnotationExport === "unverifiable") {
     limitations.push("native_annotation_export_unverifiable");
   }

@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const pinnedFirstmateRef = "e595611291247368b982eb729097c54f2b45aa78";
 const firstmateRepo = "https://github.com/kunchenguid/firstmate";
@@ -66,6 +67,7 @@ export interface QuickOptions {
   cwd: string;
   projectDir?: string;
   env: NodeJS.ProcessEnv;
+  idempotencyKey?: string;
   now?: () => string;
   maxPolls?: number;
   pollIntervalMs?: number;
@@ -159,7 +161,9 @@ export function createQuickRun(options: QuickOptions): QuickResult {
   prepareHerdrPathAdapter(stateDir, options.env);
   prepareCodexSandboxAdapter(stateDir, options.env);
   const runtimeEnv = withLocalToolchainPath(stateDir, options.env);
-  const runId = `quick-${compactTimestamp(createdAt)}`;
+  const runId = options.idempotencyKey
+    ? quickRunIdForIdempotencyKey(options.idempotencyKey)
+    : `quick-${compactTimestamp(createdAt)}`;
   const fmHome = join(stateDir, "fm-home");
   const firstmateRoot = resolveFirstmateRoot(options.cwd, options.env);
   const projectDir = resolve(options.projectDir ?? options.cwd);
@@ -208,6 +212,15 @@ export function createQuickRun(options: QuickOptions): QuickResult {
     },
     recordPath,
   };
+  const existing = readRunRecord(recordPath);
+  if (existing && reusableIdempotentQuickRecord(existing)) {
+    return {
+      ok: true,
+      record: existing,
+      stdout: existing.result.summary,
+      stderr: "",
+    };
+  }
 
   const preflight = preflightRuntime(firstmateRoot, projectDir, runtimeEnv);
   if (!baseRecord.source.paneId) {
@@ -284,6 +297,16 @@ export function readRunRecord(path: string): QuickRunRecord | undefined {
   } catch {
     return undefined;
   }
+}
+
+export function quickRunIdForIdempotencyKey(idempotencyKey: string): string {
+  if (!idempotencyKey.trim()) {
+    throw new Error("quick_idempotency_key_empty");
+  }
+  return `quick-idem-${createHash("sha256")
+    .update(idempotencyKey)
+    .digest("hex")
+    .slice(0, 32)}`;
 }
 
 export function markRunPresented(
@@ -964,4 +987,20 @@ function isQuickRunRecord(value: unknown): value is QuickRunRecord {
   if (!value || typeof value !== "object") return false;
   const maybe = value as Partial<QuickRunRecord>;
   return maybe.schemaVersion === 1 && maybe.recipe === "quick" && typeof maybe.id === "string";
+}
+
+function reusableIdempotentQuickRecord(
+  record: QuickRunRecord,
+): record is QuickRunRecord & {
+  result: NonNullable<QuickRunRecord["result"]>;
+} {
+  return record.status === "completed"
+    && Boolean(record.result?.summary.trim())
+    && Boolean(record.result?.readBackAt)
+    && Boolean(record.worker.taskId)
+    && Boolean(record.worker.target)
+    && Boolean(record.evidence?.firstmateStatus)
+    && Boolean(record.evidence?.scoutReport)
+    && record.claims.firstmatePrimaryInHerdr
+    && record.claims.workerVisible;
 }

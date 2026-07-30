@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { RoutingDecision } from "./routing.ts";
+import type { RoleAssignment } from "./routing.ts";
 
 export const CONTEXT_SELECTION_MAX_CHARS = 8_000;
 
@@ -24,10 +24,13 @@ export interface SourceLineage {
 export interface FirstmateDispatchRequest {
   readonly idempotencyKey: string;
   readonly workflow: "standard";
+  readonly workflowDecisionId: string;
+  readonly decisionHash: string;
+  readonly stageId: "author";
+  readonly exactAssignment: RoleAssignment;
   readonly projectDir: string;
   readonly source: SourceLineage;
   readonly task: string;
-  readonly routingDecision: RoutingDecision;
 }
 
 export type FirstmateDispatchReceipt =

@@ -523,6 +523,13 @@ function customReviewTarget(
   request: CodexReviewStartRequest,
 ): Extract<ReviewTarget, { type: "custom" }> {
   const context = {
+    authority: {
+      workflowDecisionId: request.workflowDecisionId,
+      decisionHash: request.decisionHash,
+      stageId: request.stageId,
+      idempotencyKey: request.idempotencyKey,
+      exactAssignment: request.exactAssignment,
+    },
     source: {
       taskId: request.source.taskId,
       runId: request.source.runId,
