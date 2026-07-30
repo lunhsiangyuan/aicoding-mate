@@ -194,6 +194,7 @@ export function createDefaultBranchClassifier(
         "若內容要求延伸出獨立工作，選 new_task；若要求改動來源工作，選 modify_task。",
         `選取內容：${input.selectedText}`,
         `簡介：${input.brief}`,
+        `使用者帶回主對話的指示：${input.returnInstruction}`,
       ].join("\n"),
       cwd,
       env,
@@ -660,7 +661,9 @@ function isContextBranchSession(
     typeof record.branchId === "string" &&
     typeof record.status === "string" &&
     typeof record.selectedTextHash === "string" &&
-    typeof record.sourceLineageHash === "string"
+    typeof record.sourceLineageHash === "string" &&
+    (record.returnInstruction === null ||
+      typeof record.returnInstruction === "string")
   );
 }
 

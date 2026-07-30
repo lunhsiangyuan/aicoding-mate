@@ -24,6 +24,7 @@ import {
   confirmBranchRecitation,
   reciteBranchReturn,
   sendConfirmedBranchCapsule,
+  setBranchReturnInstruction,
 } from "./branch/index.ts";
 import {
   createDefaultBranchClassifier,
@@ -184,6 +185,20 @@ async function conductContextBranchConversation(
       `\n深入研究：${session.privateResearch.at(-1)?.summary ?? "無結果"}\n`,
     );
   }
+
+  io.stdout.write(
+    "\n請告訴我帶回主對話後要做什麼，例如「建立新的 review 任務」或「修改原任務的報告格式」。\n> ",
+  );
+  const instructed = setBranchReturnInstruction(
+    session,
+    await question(),
+    now,
+  );
+  if (!instructed.ok) {
+    io.stderr.write(`無法記錄帶回指示: ${instructed.reason}\n`);
+    return 1;
+  }
+  session = writeBranchSession(branchPath, instructed.value);
 
   const recited = reciteBranchReturn(
     session,

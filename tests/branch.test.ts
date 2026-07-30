@@ -9,6 +9,7 @@ import {
   projectMainTranscript,
   reciteBranchReturn,
   sendConfirmedBranchCapsule,
+  setBranchReturnInstruction,
   toConfirmedCapsule,
   type BranchTaskRunRecord,
   type BranchTaskRunRegistryPort,
@@ -46,13 +47,20 @@ function contextJson(overrides: Record<string, unknown> = {}): string {
 function createBriefedBranch(): ContextBranchSession {
   const parsed = parseHerdrBranchContext(contextJson());
   if (!parsed.ok) throw new Error(parsed.reason);
-  return briefContextBranch(
+  const briefed = briefContextBranch(
     createContextBranch(parsed.value, {
       now,
       branchId: "branch-1",
     }),
     now,
   );
+  const instructed = setBranchReturnInstruction(
+    briefed,
+    "建立一個新的 review 任務",
+    now,
+  );
+  if (!instructed.ok) throw new Error(instructed.reason);
+  return instructed.value;
 }
 
 function registry(
@@ -167,6 +175,7 @@ describe("context branch core", () => {
     expect(capsule.value.capsuleId).toBe(confirmed.value.lineageIntentId);
     expect(capsule.value.firstmateSessionRef).toBe("firstmate-session-1");
     expect(capsule.value.mutationIntent).toBe("new_task");
+    expect(recited.value.recitation).toContain("建立一個新的 review 任務");
 
     const sent = await sendConfirmedBranchCapsule(
       confirmed.value,
@@ -276,6 +285,44 @@ describe("context branch core", () => {
     expect(projectMainTranscript(declined.value).at(-1)?.kind).toBe(
       "confirmation_result",
     );
+  });
+
+  test("requires a bounded return instruction before semantic recitation", () => {
+    const parsed = parseHerdrBranchContext(contextJson());
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const briefed = briefContextBranch(
+      createContextBranch(parsed.value, { now, branchId: "branch-no-prompt" }),
+      now,
+    );
+
+    expect(
+      setBranchReturnInstruction(briefed, "   ", now),
+    ).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "return_instruction_missing",
+      charLength: 0,
+    });
+    expect(
+      setBranchReturnInstruction(briefed, "😀".repeat(2_001), now),
+    ).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "return_instruction_too_large",
+      charLength: 2_001,
+    });
+    expect(
+      reciteBranchReturn(
+        briefed,
+        registry(briefed),
+        () => "new_task",
+        now,
+      ),
+    ).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "branch_not_ready_to_recite",
+    });
   });
 
   test("rejects blank confirmation ids", () => {

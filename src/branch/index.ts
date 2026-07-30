@@ -33,6 +33,8 @@ export type BranchFailureReason =
   | "source_task_missing"
   | "source_run_missing"
   | "firstmate_session_missing"
+  | "return_instruction_missing"
+  | "return_instruction_too_large"
   | "branch_not_briefed"
   | "branch_not_ready_to_recite"
   | "branch_not_recited"
@@ -93,6 +95,7 @@ export interface ContextBranchSession {
   readonly updatedAt: string;
   readonly expiresAt: string | null;
   readonly brief: string | null;
+  readonly returnInstruction: string | null;
   readonly privateResearch: readonly BranchResearchNote[];
   readonly mutationIntent: MutationIntent | null;
   readonly recitation: string | null;
@@ -118,6 +121,7 @@ export interface BranchTaskRunRegistryPort {
 export interface BranchClassifierInput {
   readonly selectedText: string;
   readonly brief: string;
+  readonly returnInstruction: string;
   readonly source: SourceLineage;
   readonly taskRun: BranchTaskRunRecord;
 }
@@ -262,6 +266,7 @@ export function createContextBranch(
     updatedAt: options.now(),
     expiresAt: options.expiresAt ?? null,
     brief: null,
+    returnInstruction: null,
     privateResearch: [],
     mutationIntent: null,
     recitation: null,
@@ -335,6 +340,35 @@ export function chooseDeeperResearch(
   };
 }
 
+export function setBranchReturnInstruction(
+  session: ContextBranchSession,
+  instruction: string,
+  now: () => string,
+): BranchResult<ContextBranchSession> {
+  if (
+    session.brief === null ||
+    (session.status !== "briefed" && session.status !== "researching")
+  ) {
+    return fail("branch_not_briefed");
+  }
+  const normalized = instruction.trim();
+  const charLength = Array.from(normalized).length;
+  if (charLength === 0) {
+    return fail("return_instruction_missing", 0);
+  }
+  if (charLength > 2_000) {
+    return fail("return_instruction_too_large", charLength);
+  }
+  return {
+    ok: true,
+    value: {
+      ...session,
+      returnInstruction: normalized,
+      updatedAt: now(),
+    },
+  };
+}
+
 export function reciteBranchReturn(
   session: ContextBranchSession,
   registry: BranchTaskRunRegistryPort,
@@ -343,6 +377,7 @@ export function reciteBranchReturn(
 ): BranchResult<ContextBranchSession> {
   if (
     session.brief === null ||
+    session.returnInstruction === null ||
     (session.status !== "briefed" && session.status !== "researching")
   ) {
     return fail("branch_not_ready_to_recite");
@@ -362,10 +397,15 @@ export function reciteBranchReturn(
   const mutationIntent = classifier({
     selectedText: session.selectedText,
     brief: session.brief,
+    returnInstruction: session.returnInstruction,
     source: session.source,
     taskRun,
   });
-  const recitation = buildRecitation(mutationIntent, session.selectedText);
+  const recitation = buildRecitation(
+    mutationIntent,
+    session.selectedText,
+    session.returnInstruction,
+  );
   return {
     ok: true,
     value: appendTranscript(
@@ -526,13 +566,20 @@ function plainLanguageBrief(selectedText: string): string {
   return `這段選取內容的重點是：「${preview}${Array.from(text).length > 160 ? "..." : ""}」。`;
 }
 
-function buildRecitation(intent: MutationIntent, selectedText: string): string {
+function buildRecitation(
+  intent: MutationIntent,
+  selectedText: string,
+  returnInstruction: string,
+): string {
   const destination =
     intent === "new_task" ? "建立一個新任務" : "修改來源主任務";
   const preview = Array.from(selectedText.replace(/\s+/g, " ").trim())
     .slice(0, 180)
     .join("");
-  return `我會把這段選取內容帶回主對話，判定為「${destination}」：${preview}`;
+  return (
+    `我會把這段選取內容帶回主對話，判定為「${destination}」。`
+    + `你的指示是：「${returnInstruction}」。選取內容是：「${preview}」。`
+  );
 }
 
 function appendTranscript(
