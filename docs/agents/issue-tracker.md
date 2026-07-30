@@ -36,3 +36,33 @@ Do not close or modify an unrelated parent issue. Do not mark a ticket complete 
 #2 Codex feasibility ─────────────────────────────────────────────> #7                  │
 #4 + #5 + #6 + #7 ────────────────────────────────────────────────────────────────> #8
 ```
+
+## v0.2 draft tickets
+
+這三張是本地已核准規格，尚未自動發布到 GitHub Issues。
+
+```text
+V2-01 Firstmate Workflow Authority
+  └──> V2-02 Canonical Run Registry
+         └──> V2-03 Authority migration gate
+```
+
+### V2-01 Firstmate Workflow Authority
+
+- Owner：Control Plane
+- Outcome：Firstmate 成為 recipe、角色、model、fallback、Judge 與 Report Composer 的唯一 decision writer。
+- Acceptance：Adapter 只執行 immutable assignment；availability 改變必須產生新 decision version。
+
+### V2-02 Canonical Run Registry
+
+- Owner：Runtime
+- Blocked by：V2-01
+- Outcome：stable idempotency、canonical run、attempt、outbox、lease、reconciliation 與 append-only lineage。
+- Acceptance：重複 intent coalesce；dispatch crash window 不重派；成功 canonical run 不被失敗 attempt 遮蔽。
+
+### V2-03 Authority migration gate
+
+- Owner：Integration
+- Blocked by：V2-01、V2-02
+- Outcome：所有 v0.1 workflow 接到同一 decision/run authority。
+- Acceptance：以先前重複 Standard dispatch 作實機回歸，通過前 authority 欄位保持 deferred。

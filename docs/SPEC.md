@@ -260,3 +260,51 @@ v0.1 必須同時具備：
 - Codex 原生 review handoff。
 - Recall-first 雙層報告與 Coverage Review。
 - 每項驗收情境具有可回讀的 runtime evidence。
+
+## 9. v0.2 核心：兩個 Authority
+
+v0.2 不以增加更多 provider 或 UI 為主，而是完成「薄控制層」的責任收斂。以下兩項是 v0.2 的必要條件，不是可選增強。
+
+### FR-12 Workflow Authority
+
+Firstmate 是唯一 workflow decision writer：
+
+- 只有 Firstmate 可以選 recipe、建立或修改 stage、決定角色、選 model alias、核准 fallback、停止或重啟 workflow。
+- Author、Reviewer、Challenger、Judge 與 Report Composer 都必須由 Firstmate 的同一份 decision envelope 指派。
+- Adapter 只可回報 capability／availability observation、執行已解析的 exact assignment，以及正規化 provider receipt。
+- Adapter 不可自行選模型、角色、fallback 或重試路徑，也不可直接把 worker 結果承諾給使用者。
+- availability 變化若會改變 routing，必須回到 Firstmate 產生新的 decision version，不可在 Adapter 內改寫舊 decision。
+
+每份 decision envelope 至少包含：
+
+- `workflowDecisionId`
+- `recipeId` 與 recipe version
+- intent／config／availability hashes
+- 完整 role assignments
+- stage barriers、最大回合與停止條件
+- fallback policy
+- source task/run lineage
+- Firstmate signature 或可驗證 decision hash
+
+### FR-13 Runtime Authority
+
+Run Registry 是 execution truth 的唯一持久來源：
+
+- 外部 dispatch 前必須先寫入 durable intent 與 stable idempotency key。
+- 同一 canonical intent 的重送必須 coalesce 到同一 canonical run。
+- 每個 external dispatch 都要傳遞下游可辨識的 idempotency key；下游不支援時，必須以 receipt read-back 與 reconciliation 補足，不可假裝 exactly-once。
+- 狀態至少區分 `pending`、`dispatching`、`accepted`、`running`、`completed`、`failed`、`unknown_outcome`。
+- timeout、程序中斷或 receipt 遺失時先進入 `unknown_outcome`；查明下游是否已接受後才能重派。
+- canonical run、attempt、worker、artifact、review 與 report 都使用 append-only lineage 連接。
+- 同一 intent 的並行 writer 以 lease／compare-and-set 保護；程序內 lock 不算跨程序保證。
+- UI、pane、log、HTTP 成功或單一 JSON 檔存在都不能凌駕 Run Registry。
+
+### v0.2 驗收
+
+1. 同一 Standard intent 被快速送出兩次，只產生一個 canonical run；第二次回傳 `duplicate/coalesced`，不再建立第二個 Firstmate task。
+2. dispatch 後在 receipt 寫入前中斷，重啟後先 read back 下游狀態，不直接重派。
+3. Adapter 收到 unavailable／quota-limited 後只能回報；只有新的 Firstmate decision 可以改用 fallback。
+4. Author、Reviewer、Judge、Report Composer 的 assignment 與輸出可追溯到同一 `workflowDecisionId`。
+5. report 只接受 registry 中 completed 且 lineage 完整的 artifacts；較新的失敗 attempt 不會遮蔽既有成功 canonical run。
+
+先前實機曾在同一 Standard 目標產生兩筆不同 run。該案例保留為 Runtime Authority 的回歸情境，而不是以「使用者不要重複按」規避。

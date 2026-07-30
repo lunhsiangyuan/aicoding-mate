@@ -117,3 +117,52 @@
 - 原生文件／簡報 annotation 整合。
 
 這些項目不阻擋 v0.1。
+
+## v0.2 核心交付
+
+### V2-01 Firstmate Workflow Authority
+
+交付：
+
+- versioned decision envelope。
+- Firstmate-only workflow mutation API。
+- Author、Reviewer、Challenger、Judge、Report Composer 的完整 assignments。
+- Adapter contract 移除 model selection、fallback 與 workflow retry。
+- availability 改變時的 re-decision 流程。
+
+完成情境：
+
+- 對 Adapter 注入 quota failure，只會得到 observation，不會發生私下 fallback。
+- 每個 worker 與 report 都能追溯到同一 decision version。
+- 修改 Adapter 不會改變 recipe、barrier 或停止條件。
+
+### V2-02 Canonical Run Registry
+
+Blocked by：V2-01 的 decision envelope identity。
+
+交付：
+
+- stable intent fingerprint 與 idempotency key。
+- canonical run／attempt 分離。
+- durable intent + outbox。
+- lease／compare-and-set single-writer gate。
+- downstream receipt read-back 與 `unknown_outcome` reconciliation。
+- append-only task、worker、artifact、review、report lineage。
+
+完成情境：
+
+- 同一 intent 的並行或連續重送只建立一個 canonical run。
+- dispatch crash window 不會產生第二個外部 task。
+- 成功 run 不會被較新的失敗 attempt 遮蔽。
+- Run Registry read-back 與 matching Herdr pane 顯示同一 canonical result。
+
+### V2-03 Authority migration gate
+
+Blocked by：V2-01、V2-02。
+
+交付：
+
+- Quick、Standard、Adversarial、Research、Context Branch、Codex Review 全部改用同一 registry。
+- 舊 v0.1 records 的唯讀 migration／lineage mapping。
+- duplicate Standard dispatch 的回歸測試與實機證據。
+- authority 欄位由 `v0.2_deferred` 改為 verified 只在完整 gate 通過後進行。

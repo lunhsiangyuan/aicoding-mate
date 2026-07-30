@@ -233,3 +233,65 @@ Adapter 不得：
 - 只有在公開 extension surface 確實不足時，才重新評估長期 fork。
 
 版本固定只代表相容性目標。每次升級仍需跑 end-to-end workflow、權限與 report regression。
+
+## 9. v0.2 Authority 架構
+
+v0.1 已有 deterministic routing、durable run records 與 fail-closed read-back，但尚未形成跨 workflow 的單一 authority。v0.2 將責任收斂成以下形狀：
+
+```mermaid
+flowchart LR
+    U["使用者 intent"] --> F["Firstmate<br/>唯一 Workflow Authority"]
+    O["Capability observations"] --> F
+    F --> D["Versioned Decision Envelope"]
+    D --> R["Run Registry<br/>唯一 Runtime Authority"]
+    R --> X["Mechanical Adapters"]
+    X --> P["Codex／Claude／Cursor／Gemini"]
+    P --> X
+    X --> R
+    R --> C["Report Composer assignment"]
+    C --> F
+    F --> U
+```
+
+### Workflow Authority
+
+Firstmate 同時擁有 recipe、角色、model alias、fallback 與停止條件的寫入權。Model Router、Workflow Engine 與 Report Composer 是 Firstmate 控制平面的模組，不是平行的決策者。
+
+Adapter 的輸入是 immutable assignment，輸出是 observation／receipt。它可以說「指定模型不可用」，但不能把「不可用」改寫成「我替你換成另一個模型」。
+
+### Runtime Authority
+
+Run Registry 先保存 intent，再允許 Adapter dispatch。canonical run 與實際 attempt 分離：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Dispatching: lease acquired
+    Dispatching --> Accepted: downstream receipt
+    Dispatching --> UnknownOutcome: timeout or crash
+    UnknownOutcome --> Accepted: read-back found receipt
+    UnknownOutcome --> Dispatching: read-back proves no dispatch
+    Accepted --> Running
+    Running --> Completed
+    Running --> Failed
+    Completed --> [*]
+    Failed --> [*]
+```
+
+同一 idempotency key 只對應一個 canonical run；每次嘗試另有 attempt ID。這能同時保留失敗歷史與單一完成真相，不讓新失敗 record 遮蔽舊成功，也不把兩次 dispatch 當成兩個互不相關的任務。
+
+### Adapter 的 v0.2 最小介面
+
+```text
+observeCapabilities() -> AvailabilityObservation
+execute(exactAssignment, idempotencyKey) -> DispatchReceipt
+readBack(dispatchReceipt | idempotencyKey) -> RuntimeObservation
+```
+
+介面刻意沒有 `chooseModel`、`fallback`、`retryWorkflow` 或 `composeReport`。這些都屬於 Firstmate。
+
+### v0.1 與 v0.2 邊界
+
+- v0.1：每個 workflow 已能留下 durable record，Adapter 可被限制為 exact assignment executor。
+- v0.2：跨 workflow 的 decision envelope、canonical Run Registry、outbox、lease、reconciliation 與下游 idempotency propagation。
+- 在 v0.2 gate 通過前，任何 v0.1 record 中的 `workflowAuthority`／`runtimeAuthority` 都必須維持 `v0.2_deferred`。

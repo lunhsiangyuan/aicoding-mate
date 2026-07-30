@@ -2,7 +2,7 @@
 
 AI Coding Mate 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目標、優先順序與不能碰的邊界；系統負責把技術工作交給 Firstmate、Herdr 與不同模型，並把結果整理成能直接閱讀的報告。
 
-> 目前狀態：v0.1 規格已確認；T1 提供 Herdr runtime doctor，T2 提供可從 Herdr 派出真實 Firstmate Codex worker 的 Quick workflow。
+> 目前狀態：v0.1 已提供 Herdr doctor、Firstmate Quick、Standard、Adversarial、Research、Context Branch 與 Codex native review bridge；v0.2 的 Workflow Authority 與 Runtime Authority 已核准為下一階段核心，尚未宣稱完成。
 
 ## 它要解決什麼
 
@@ -46,7 +46,7 @@ AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herd
 - `Open in Codex Review` 直接使用 Codex 原生 review／annotation 介面。
 - 沿用既有 Claude Code／Codex skills 與 adapters，不改寫內部 prompt。
 
-完整需求見 [產品規格](docs/SPEC.md)，系統邊界見 [架構說明](docs/ARCHITECTURE.md)，交付順序見 [實作計畫](docs/IMPLEMENTATION_PLAN.md)，Codex review handoff 現況見 [Codex Review Handoff 可行性](docs/CODEX_REVIEW_FEASIBILITY.md)。
+先從 [繁體中文使用說明](docs/USER_GUIDE.zh-TW.md) 開始。完整需求見 [產品規格](docs/SPEC.md)，系統邊界見 [架構說明](docs/ARCHITECTURE.md)，交付順序見 [實作計畫](docs/IMPLEMENTATION_PLAN.md)，Codex review handoff 現況見 [Codex Review Handoff 可行性](docs/CODEX_REVIEW_FEASIBILITY.md)。
 
 ## 設定方式
 
@@ -63,7 +63,7 @@ v0.1 將提供兩個入口，內容等價：
 - [Workflow Recipes](config/workflows.example.yaml)
 - [Adapter Registry](config/adapters.example.yaml)
 
-模型名稱不寫死。設定檔使用「最強推理」、「平衡建置」、「快速搜尋」等邏輯角色，再由 adapter 對應到當下可用的實際模型。
+Workflow recipe 不寫死 provider model ID。設定檔使用「最強推理」、「平衡建置」、「快速搜尋」等邏輯角色，再由可覆寫的 adapter policy 對應到當下可用的實際模型。
 
 ## T1：從 Herdr 開啟診斷面
 
@@ -108,6 +108,31 @@ bun bin/aicoding-mate read-run state/aicoding-mate/runs/<run-id>.json
 ```
 
 若 bootstrap 或 spawn 失敗，先依 pane 中的 blocker 修正，再執行 `bootstrap-firstmate` 並從新的 Quick pane 重試；系統不會把缺少登入、工具、pane、隔離 worktree 或 read-back 的情況包裝成成功。
+
+## 其他 Herdr 工作面
+
+```bash
+bun bin/aicoding-mate open --entrypoint standard
+bun bin/aicoding-mate open --entrypoint adversarial
+bun bin/aicoding-mate open --entrypoint research
+```
+
+- Standard：Firstmate/Codex 形成方案，再做跨模型 review。
+- Adversarial：Author、Challenger、Judge 最多兩輪收斂。
+- Research：保留高 recall discovery denominator、成熟度與 coverage。
+- Context Branch：從 Herdr selection action 開啟，最後複誦並明確確認後才送回來源任務。
+- Codex Review：從 Herdr selection action 建立 detached native review，Review Capsule 完成與 desktop deep-link request 分開驗證。
+
+主畫面只顯示結論、影響、下一步與 evidence 路徑；完整模型輸出、未知項目與 lineage 保留在 durable record。
+
+## v0.2 Authority
+
+v0.2 的兩個必要條件：
+
+- **Workflow Authority**：Firstmate 是 Author、Reviewer、Challenger、Judge、Report Composer、fallback 與停止條件的唯一 decision writer；Adapter 只回報能力與執行 exact assignment。
+- **Runtime Authority**：Run Registry 以 stable idempotency key 管理 canonical run、attempt、outbox、lease、`unknown_outcome` reconciliation 與 append-only lineage。
+
+在這兩項通過實機 gate 前，v0.1 records 會維持 `v0.2_deferred`。詳細驗收見 [產品規格第 9 節](docs/SPEC.md#9-v02-核心兩個-authority)。
 
 安裝或 link Herdr plugin 代表在本機以使用者權限執行此 repository 的程式碼；請先檢查 `herdr-plugin.toml`、`bin/aicoding-mate` 與 `src/`。
 
