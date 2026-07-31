@@ -25,6 +25,7 @@ function makePinnedFirstmate(root: string) {
     "fm-spawn.sh",
     [
       "if [ -n \"${ACM_FM_SPAWN_ARGS_LOG:-}\" ]; then printf '%s\\n' \"$@\" > \"$ACM_FM_SPAWN_ARGS_LOG\"; fi",
+      "if [ -n \"${ACM_FM_EXECUTION_ENV_LOG:-}\" ]; then printf '%s\\n' \"$ACM_WORKFLOW_DECISION_ID\" \"$ACM_DECISION_HASH\" \"$ACM_STAGE_ID\" \"$ACM_EXACT_ASSIGNMENT_ALIAS\" \"$ACM_EXACT_ASSIGNMENT_MODEL\" > \"$ACM_FM_EXECUTION_ENV_LOG\"; fi",
       "herdr tab create --workspace wT --cwd \"$2\" --label \"$1\" --no-focus >/dev/null",
       "mkdir -p \"$FM_HOME/state\"",
       "cat > \"$FM_HOME/state/$1.meta\" <<EOF",
@@ -115,6 +116,7 @@ describe("quick workflow", () => {
       const herdrArgsLog = join(dir, "herdr-create-args.log");
       const codexArgsLog = join(dir, "codex-args.log");
       const fmSpawnArgsLog = join(dir, "fm-spawn-args.log");
+      const fmExecutionEnvLog = join(dir, "fm-execution-env.log");
       const workerWorktree = join(dir, "worker-worktree");
       mkdirSync(binDir, { recursive: true });
       mkdirSync(workerWorktree, { recursive: true });
@@ -134,7 +136,22 @@ describe("quick workflow", () => {
           ACM_QUICK_SOURCE_PANE: "wA:p1",
           ACM_HERDR_ARGS_LOG: herdrArgsLog,
           ACM_FM_SPAWN_ARGS_LOG: fmSpawnArgsLog,
+          ACM_FM_EXECUTION_ENV_LOG: fmExecutionEnvLog,
           ACM_FAKE_WORKTREE: workerWorktree,
+        },
+        workflowExecution: {
+          workflowDecisionId: "wfd_exact_author",
+          decisionHash: "1".repeat(64),
+          stageId: "author",
+          exactAssignment: {
+            role: "author",
+            alias: "openai-builder",
+            provider: "openai",
+            family: "openai",
+            resolvedModel: "gpt-5.6-sol",
+            capabilityTier: "implementation",
+            reason: "Firstmate exact assignment",
+          },
         },
         now: () => "2026-07-30T12:00:00.000Z",
         maxPolls: 1,
@@ -143,6 +160,9 @@ describe("quick workflow", () => {
 
       expect(result.ok).toBe(true);
       expect(result.record.status).toBe("completed");
+      expect(result.record.workflowExecution?.exactAssignment.resolvedModel).toBe(
+        "gpt-5.6-sol",
+      );
       expect(result.record.fmHome).toBe(join(stateDir, "fm-home"));
       expect(readFileSync(join(stateDir, "fm-home", "config", "backend"), "utf8")).toBe("herdr\n");
       expect(result.record.firstmateRoot).toBe(firstmateRoot);
@@ -159,6 +179,16 @@ describe("quick workflow", () => {
       const fmSpawnArgs = readFileSync(fmSpawnArgsLog, "utf8");
       expect(fmSpawnArgs).toContain(join(stateDir, "toolchain", "bin", "codex"));
       expect(fmSpawnArgs).not.toContain("--harness\ncodex");
+      expect(readFileSync(fmExecutionEnvLog, "utf8")).toBe(
+        [
+          "wfd_exact_author",
+          "1".repeat(64),
+          "author",
+          "openai-builder",
+          "gpt-5.6-sol",
+          "",
+        ].join("\n"),
+      );
       const codexAdapter = spawnSync(
         join(stateDir, "toolchain", "bin", "codex"),
         ["--dangerously-bypass-approvals-and-sandbox", "prompt"],
@@ -168,6 +198,7 @@ describe("quick workflow", () => {
             ...process.env,
             FM_HOME: join(stateDir, "fm-home"),
             ACM_CODEX_ARGS_LOG: codexArgsLog,
+            ACM_EXACT_ASSIGNMENT_MODEL: "gpt-5.6-sol",
           },
         },
       );
@@ -178,6 +209,7 @@ describe("quick workflow", () => {
       expect(codexArgs).toContain(`--add-dir\n${join(stateDir, "fm-home")}`);
       expect(codexArgs).toContain("sandbox_workspace_write.network_access=false");
       expect(codexArgs).toContain("web_search=\"disabled\"");
+      expect(codexArgs).toContain("--model\ngpt-5.6-sol");
       expect(codexArgs).not.toContain("--dangerously-bypass-approvals-and-sandbox");
 
       const recordPath = result.record.recordPath;

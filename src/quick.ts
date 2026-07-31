@@ -3,10 +3,19 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
+import type { RoleAssignment } from "./contracts/index.ts";
+
 const pinnedFirstmateRef = "e595611291247368b982eb729097c54f2b45aa78";
 const firstmateRepo = "https://github.com/kunchenguid/firstmate";
 
 export type QuickStatus = "blocked" | "running" | "completed" | "failed";
+
+export interface QuickWorkflowExecution {
+  readonly workflowDecisionId: string;
+  readonly decisionHash: string;
+  readonly stageId: "author";
+  readonly exactAssignment: RoleAssignment;
+}
 
 export interface QuickRunRecord {
   schemaVersion: 1;
@@ -16,6 +25,7 @@ export interface QuickRunRecord {
   task: string;
   recipe: "quick";
   status: QuickStatus;
+  workflowExecution?: QuickWorkflowExecution;
   source: {
     paneId?: string;
   };
@@ -68,6 +78,7 @@ export interface QuickOptions {
   projectDir?: string;
   env: NodeJS.ProcessEnv;
   idempotencyKey?: string;
+  workflowExecution?: QuickWorkflowExecution;
   now?: () => string;
   maxPolls?: number;
   pollIntervalMs?: number;
@@ -183,6 +194,9 @@ export function createQuickRun(options: QuickOptions): QuickResult {
     task: options.task,
     recipe: "quick",
     status: "blocked",
+    ...(options.workflowExecution === undefined
+      ? {}
+      : { workflowExecution: options.workflowExecution }),
     source: {
       paneId: options.env.ACM_QUICK_SOURCE_PANE ?? options.env.HERDR_PANE_ID,
     },
@@ -213,12 +227,24 @@ export function createQuickRun(options: QuickOptions): QuickResult {
     recordPath,
   };
   const existing = readRunRecord(recordPath);
-  if (existing && reusableIdempotentQuickRecord(existing)) {
+  if (
+    existing
+    && reusableIdempotentQuickRecord(existing)
+    && quickWorkflowExecutionMatches(existing, options.workflowExecution)
+  ) {
     return {
       ok: true,
       record: existing,
       stdout: existing.result.summary,
       stderr: "",
+    };
+  }
+  if (existing && options.idempotencyKey) {
+    return {
+      ok: false,
+      record: existing,
+      stdout: "",
+      stderr: "quick_idempotency_execution_mismatch",
     };
   }
 
@@ -250,6 +276,18 @@ export function createQuickRun(options: QuickOptions): QuickResult {
     FIRSTMATE_ROOT: firstmateRoot,
     ACM_FIRSTMATE_ROOT: firstmateRoot,
     HERDR_SESSION: baseRecord.herdr.session,
+    ...(options.workflowExecution === undefined
+      ? {}
+      : {
+          ACM_WORKFLOW_DECISION_ID:
+            options.workflowExecution.workflowDecisionId,
+          ACM_DECISION_HASH: options.workflowExecution.decisionHash,
+          ACM_STAGE_ID: options.workflowExecution.stageId,
+          ACM_EXACT_ASSIGNMENT_ALIAS:
+            options.workflowExecution.exactAssignment.alias,
+          ACM_EXACT_ASSIGNMENT_MODEL:
+            options.workflowExecution.exactAssignment.resolvedModel,
+        }),
   };
 
   registerProject(fmHome, projectDir, createdAt);
@@ -851,10 +889,14 @@ function prepareCodexSandboxAdapter(stateDir: string, env: NodeJS.ProcessEnv) {
     `real_codex=${shellSingleQuote(realCodex)}`,
     `fm_home=${shellSingleQuote(fmHome)}`,
     "safe_args=()",
+    "model_args=()",
     "for arg in \"$@\"; do",
     "  [ \"$arg\" = \"--dangerously-bypass-approvals-and-sandbox\" ] && continue",
     "  safe_args+=(\"$arg\")",
     "done",
+    "if [ -n \"${ACM_EXACT_ASSIGNMENT_MODEL:-}\" ] && [ \"$ACM_EXACT_ASSIGNMENT_MODEL\" != \"codex-session-default\" ]; then",
+    "  model_args=(--model \"$ACM_EXACT_ASSIGNMENT_MODEL\")",
+    "fi",
     "exec \"$real_codex\" \\",
     "  --sandbox workspace-write \\",
     "  --ask-for-approval never \\",
@@ -862,6 +904,7 @@ function prepareCodexSandboxAdapter(stateDir: string, env: NodeJS.ProcessEnv) {
     "  -c 'sandbox_workspace_write.network_access=false' \\",
     "  -c 'web_search=\"disabled\"' \\",
     "  -c 'mcp_servers={}' \\",
+    "  \"${model_args[@]}\" \\",
     "  \"${safe_args[@]}\"",
     "",
   ].join("\n");
@@ -1037,6 +1080,26 @@ function isQuickRunRecord(value: unknown): value is QuickRunRecord {
   if (!value || typeof value !== "object") return false;
   const maybe = value as Partial<QuickRunRecord>;
   return maybe.schemaVersion === 1 && maybe.recipe === "quick" && typeof maybe.id === "string";
+}
+
+export function quickWorkflowExecutionMatches(
+  record: QuickRunRecord,
+  expected: QuickWorkflowExecution | undefined,
+): boolean {
+  if (expected === undefined) return record.workflowExecution === undefined;
+  const actual = record.workflowExecution;
+  return actual !== undefined
+    && actual.workflowDecisionId === expected.workflowDecisionId
+    && actual.decisionHash === expected.decisionHash
+    && actual.stageId === expected.stageId
+    && actual.exactAssignment.role === expected.exactAssignment.role
+    && actual.exactAssignment.alias === expected.exactAssignment.alias
+    && actual.exactAssignment.provider === expected.exactAssignment.provider
+    && actual.exactAssignment.family === expected.exactAssignment.family
+    && actual.exactAssignment.resolvedModel
+      === expected.exactAssignment.resolvedModel
+    && actual.exactAssignment.capabilityTier
+      === expected.exactAssignment.capabilityTier;
 }
 
 function reusableIdempotentQuickRecord(

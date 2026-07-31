@@ -31,12 +31,14 @@ import {
 } from "../authority/firstmate-decision-authority.ts";
 import {
   createQuickRun,
+  quickWorkflowExecutionMatches,
   quickRunIdForIdempotencyKey,
   readRunRecord,
   validateQuickTaskScope,
   wrapStandardReadOnlyTask,
   type QuickResult,
   type QuickRunRecord,
+  type QuickWorkflowExecution,
 } from "../quick.ts";
 import {
   planStandardWorkflow,
@@ -899,16 +901,24 @@ export function defaultStandardRuntimePorts(options: {
           quickRecordPath: null,
         };
       }
+      const workflowExecution: QuickWorkflowExecution = {
+        workflowDecisionId: request.workflowDecisionId,
+        decisionHash: request.decisionHash,
+        stageId: request.stageId,
+        exactAssignment: request.exactAssignment,
+      };
       const result: QuickResult = createQuickRun({
         task: request.task,
         cwd: options.cwd,
         projectDir: options.projectDir,
         env: options.env,
         idempotencyKey: request.idempotencyKey,
+        workflowExecution,
       });
       if (
         !result.ok ||
-        !hasFirstmateAuthorReadback(result.record)
+        !hasFirstmateAuthorReadback(result.record) ||
+        !quickWorkflowExecutionMatches(result.record, workflowExecution)
       ) {
         return {
           receipt: {
@@ -960,6 +970,20 @@ export function defaultStandardRuntimePorts(options: {
           status: "mismatch",
           checkedAt,
           reason: `firstmate_quick_record_${record.status}`,
+        };
+      }
+      if (
+        !quickWorkflowExecutionMatches(record, {
+          workflowDecisionId: request.workflowDecisionId,
+          decisionHash: request.decisionHash,
+          stageId: request.stageId,
+          exactAssignment: request.exactAssignment,
+        })
+      ) {
+        return {
+          status: "mismatch",
+          checkedAt,
+          reason: "firstmate_quick_record_exact_assignment_mismatch",
         };
       }
       return {
