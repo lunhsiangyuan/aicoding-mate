@@ -33,10 +33,19 @@ export interface FirstmateDispatchRequest {
   readonly task: string;
 }
 
+export interface FirstmateDispatchIdentity {
+  readonly idempotencyKey: string;
+  readonly workflowDecisionId: string;
+  readonly decisionHash: string;
+  readonly stageId: "author";
+  readonly exactAssignmentHash: string;
+}
+
 export type FirstmateDispatchReceipt =
   | {
       readonly accepted: true;
       readonly idempotencyStatus: "accepted" | "duplicate";
+      readonly identity: FirstmateDispatchIdentity;
       readonly firstmateTaskId: string;
       readonly workerTarget: string;
       readonly evidencePath: string;
@@ -45,6 +54,7 @@ export type FirstmateDispatchReceipt =
   | {
       readonly accepted: false;
       readonly idempotencyStatus: "rejected";
+      readonly identity: null;
       readonly firstmateTaskId: null;
       readonly workerTarget: null;
       readonly evidencePath: null;
@@ -142,6 +152,38 @@ export type CapsuleInjectionResult =
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+export function firstmateDispatchIdentity(
+  request: FirstmateDispatchRequest,
+): FirstmateDispatchIdentity {
+  return {
+    idempotencyKey: request.idempotencyKey,
+    workflowDecisionId: request.workflowDecisionId,
+    decisionHash: request.decisionHash,
+    stageId: request.stageId,
+    exactAssignmentHash: sha256(
+      JSON.stringify({
+        role: request.exactAssignment.role,
+        alias: request.exactAssignment.alias,
+        provider: request.exactAssignment.provider,
+        family: request.exactAssignment.family,
+        resolvedModel: request.exactAssignment.resolvedModel,
+        capabilityTier: request.exactAssignment.capabilityTier,
+        reason: request.exactAssignment.reason,
+      }),
+    ),
+  };
+}
+
+export function firstmateDispatchReceiptMatches(
+  request: FirstmateDispatchRequest,
+  receipt: FirstmateDispatchReceipt,
+): boolean {
+  if (!receipt.accepted) return false;
+  return JSON.stringify(receipt.identity) === JSON.stringify(
+    firstmateDispatchIdentity(request),
+  );
 }
 
 export function selectedTextHash(selectedText: string): string {

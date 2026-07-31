@@ -6,6 +6,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   assertDecisionReadyReport,
   assertWorkflowDecisionEnvelope,
+  firstmateDispatchIdentity,
+  firstmateDispatchReceiptMatches,
   type AvailabilityCandidate,
   type AvailabilitySnapshot,
   type DecisionReadyReport,
@@ -90,7 +92,7 @@ export interface StandardRuntimePorts {
     assignment: RoleAssignment,
     execution: StandardReviewExecution,
   ) => Promise<StandardReviewOutcome>;
-  readonly readBackAuthor?: (
+  readonly readBackAuthor: (
     request: FirstmateDispatchRequest,
   ) => Promise<
     | {
@@ -454,7 +456,6 @@ export async function createStandardRun(
         && opened.run.status !== "accepted"
         && opened.run.status !== "running"
       )
-      || ports.readBackAuthor === undefined
     ) {
       return {
         ok: false,
@@ -499,6 +500,28 @@ export async function createStandardRun(
     renewRunLease(registry, lease, options.env, now);
     const readBack = await ports.readBackAuthor(dispatchRequest);
     if (readBack.status === "found") {
+      if (
+        !firstmateDispatchReceiptMatches(
+          dispatchRequest,
+          readBack.outcome.receipt,
+        )
+      ) {
+        registry.markUnknownOutcome(lease, {
+          reason: "firstmate_author_receipt_identity_mismatch",
+          readback: {
+            status: "mismatch",
+            checkedAt: now(),
+            reason: "firstmate_author_receipt_identity_mismatch",
+          },
+          now: now(),
+        });
+        releaseLeaseIfHeld(registry, lease);
+        return {
+          ok: false,
+          record: existing ?? base,
+          dedupeStatus: "reconciliation_required",
+        };
+      }
       reconciledAuthor = readBack.outcome;
       registry.acceptDispatch(lease, {
         idempotencyKey: authorDispatchKey,
@@ -698,7 +721,51 @@ export async function createStandardRun(
         author.receipt.reason ?? "firstmate_author_failed",
       );
     }
+    if (!firstmateDispatchReceiptMatches(dispatchRequest, author.receipt)) {
+      registry.markUnknownOutcome(lease, {
+        reason: "firstmate_author_receipt_identity_mismatch",
+        readback: {
+          status: "mismatch",
+          checkedAt: now(),
+          reason: "firstmate_author_receipt_identity_mismatch",
+        },
+        now: now(),
+      });
+      return blocked(
+        { ...base, author },
+        now,
+        "firstmate_author_receipt_identity_mismatch",
+      );
+    }
     if (!authorWasReconciled) {
+      renewRunLease(registry, lease, options.env, now);
+      const authorReadback = await ports.readBackAuthor(dispatchRequest);
+      if (
+        authorReadback.status !== "found"
+        || !firstmateDispatchReceiptMatches(
+          dispatchRequest,
+          authorReadback.outcome.receipt,
+        )
+        || authorReadback.outcome.summary !== author.summary
+      ) {
+        registry.markUnknownOutcome(lease, {
+          reason: "firstmate_author_requires_durable_readback",
+          readback:
+            authorReadback.status === "found"
+              ? {
+                  status: "mismatch",
+                  checkedAt: now(),
+                  reason: "firstmate_author_readback_identity_or_output_mismatch",
+                }
+              : authorReadback,
+          now: now(),
+        });
+        return blocked(
+          { ...base, author },
+          now,
+          "firstmate_author_requires_durable_readback",
+        );
+      }
       registry.acceptDispatch(lease, {
         idempotencyKey: authorDispatchKey,
         target: author.receipt.workerTarget,
@@ -1128,6 +1195,7 @@ export function defaultStandardRuntimePorts(options: {
           receipt: {
             accepted: false,
             idempotencyStatus: "rejected",
+            identity: null,
             firstmateTaskId: null,
             workerTarget: null,
             evidencePath: null,
@@ -1151,6 +1219,9 @@ export function defaultStandardRuntimePorts(options: {
         idempotencyKey: request.idempotencyKey,
         workflowExecution,
       });
+      if (result.record.status === "running") {
+        throw new Error("firstmate_author_completion_unknown");
+      }
       if (
         !result.ok ||
         !hasFirstmateAuthorReadback(result.record) ||
@@ -1160,6 +1231,7 @@ export function defaultStandardRuntimePorts(options: {
           receipt: {
             accepted: false,
             idempotencyStatus: "rejected",
+            identity: null,
             firstmateTaskId: null,
             workerTarget: null,
             evidencePath: null,
@@ -1176,6 +1248,7 @@ export function defaultStandardRuntimePorts(options: {
         receipt: {
           accepted: true,
           idempotencyStatus: "accepted",
+          identity: firstmateDispatchIdentity(request),
           firstmateTaskId: result.record.worker.taskId,
           workerTarget: result.record.worker.target,
           evidencePath: result.record.recordPath,
@@ -1228,6 +1301,7 @@ export function defaultStandardRuntimePorts(options: {
           receipt: {
             accepted: true,
             idempotencyStatus: "duplicate",
+            identity: firstmateDispatchIdentity(request),
             firstmateTaskId: record.worker.taskId,
             workerTarget: record.worker.target,
             evidencePath: record.recordPath,

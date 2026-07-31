@@ -17,6 +17,7 @@ import type {
   FirstmateDispatchRequest,
   RoleAssignment,
 } from "../src/contracts/index.ts";
+import { firstmateDispatchIdentity } from "../src/contracts/index.ts";
 import {
   createStandardRun,
   defaultStandardRuntimePorts,
@@ -108,20 +109,28 @@ function durableReview(
 function successfulPorts(
   observeRequest?: (request: FirstmateDispatchRequest) => void,
 ): StandardRuntimePorts {
+  const authorOutcome = (request: FirstmateDispatchRequest) => ({
+    receipt: {
+      accepted: true as const,
+      idempotencyStatus: "accepted" as const,
+      identity: firstmateDispatchIdentity(request),
+      firstmateTaskId: "quick-author-1",
+      workerTarget: "w1:p2",
+      evidencePath: "/tmp/quick-author-1.json",
+      reason: null,
+    },
+    summary: "Codex author 建議保留薄 adapter 與固定 workflow。",
+    quickRecordPath: "/tmp/quick-author-1.json",
+  });
   return {
     async dispatchAuthor(request) {
       observeRequest?.(request);
+      return authorOutcome(request);
+    },
+    async readBackAuthor(request) {
       return {
-        receipt: {
-          accepted: true,
-          idempotencyStatus: "accepted",
-          firstmateTaskId: "quick-author-1",
-          workerTarget: "w1:p2",
-          evidencePath: "/tmp/quick-author-1.json",
-          reason: null,
-        },
-        summary: "Codex author 建議保留薄 adapter 與固定 workflow。",
-        quickRecordPath: "/tmp/quick-author-1.json",
+        status: "found" as const,
+        outcome: authorOutcome(request),
       };
     },
     async review(_prompt, assignment, execution) {
@@ -269,6 +278,7 @@ describe("standard runtime integration", () => {
         authorDispatches += 1;
         return basePorts.dispatchAuthor(request);
       },
+      readBackAuthor: basePorts.readBackAuthor,
       async review(prompt, assignment, execution) {
         reviewDispatches += 1;
         return basePorts.review(prompt, assignment, execution);
@@ -313,6 +323,7 @@ describe("standard runtime integration", () => {
         await authorGate;
         return basePorts.dispatchAuthor(request);
       },
+      readBackAuthor: basePorts.readBackAuthor,
       review: basePorts.review,
     };
     const options = {
@@ -349,38 +360,16 @@ describe("standard runtime integration", () => {
     const basePorts = successfulPorts();
     let authorDispatches = 0;
     let reviewDispatches = 0;
-    const recoveredOutcome = await basePorts.dispatchAuthor({
-      idempotencyKey: "fixture",
-      workflow: "standard",
-      workflowDecisionId: "wfd_fixture",
-      decisionHash: "1".repeat(64),
-      stageId: "author",
-      exactAssignment: {
-        role: "author",
-        alias: "openai-builder",
-        provider: "openai",
-        family: "openai",
-        resolvedModel: "configured-openai-builder",
-        capabilityTier: "implementation",
-        reason: "fixture",
-      },
-      projectDir: root,
-      source: {
-        taskId: "fixture",
-        runId: "fixture",
-        workspace: "w1",
-        tabId: "w1:t1",
-        paneId: "w1:p1",
-      },
-      task: "fixture",
-    });
     const ports: StandardRuntimePorts = {
       async dispatchAuthor() {
         authorDispatches += 1;
         throw new Error("crash_after_downstream_accept");
       },
-      async readBackAuthor() {
-        return { status: "found", outcome: recoveredOutcome };
+      async readBackAuthor(request) {
+        return {
+          status: "found",
+          outcome: await basePorts.dispatchAuthor(request),
+        };
       },
       async review(prompt, assignment, execution) {
         reviewDispatches += 1;
@@ -414,40 +403,91 @@ describe("standard runtime integration", () => {
     expect(reconciled.record.id).toBe(interrupted.record.id);
   });
 
+  test("keeps the canonical run unknown when author read-back identity differs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    const basePorts = successfulPorts();
+    let reviewDispatches = 0;
+    const ports: StandardRuntimePorts = {
+      dispatchAuthor: basePorts.dispatchAuthor,
+      async readBackAuthor(request) {
+        const outcome = await basePorts.dispatchAuthor(request);
+        if (!outcome.receipt.accepted) {
+          throw new Error("fixture author was unexpectedly rejected");
+        }
+        return {
+          status: "found",
+          outcome: {
+            ...outcome,
+            receipt: {
+              ...outcome.receipt,
+              identity: {
+                ...outcome.receipt.identity,
+                decisionHash: "0".repeat(64),
+              },
+            },
+          },
+        };
+      },
+      async review(prompt, assignment, execution) {
+        reviewDispatches += 1;
+        return basePorts.review(prompt, assignment, execution);
+      },
+    };
+
+    const result = await createStandardRun({
+      task: "Author receipt identity 不一致時不得形成報告",
+      cwd: root,
+      env: {
+        ACM_STATE_DIR: join(root, "state"),
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+      },
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports,
+    });
+
+    const canonicalRunId = result.record.authority.canonicalRunId;
+    expect(canonicalRunId).not.toBeNull();
+    if (canonicalRunId === null) {
+      throw new Error("canonical run id missing");
+    }
+    const projection = JSON.parse(
+      readFileSync(
+        join(
+          root,
+          "state",
+          "run-registry",
+          "runs",
+          canonicalRunId,
+          "projection.json",
+        ),
+        "utf8",
+      ),
+    ) as { readonly status: string };
+
+    expect(result.ok).toBe(false);
+    expect(result.record.blockers).toContain(
+      "firstmate_author_requires_durable_readback",
+    );
+    expect(result.record.report).toBeNull();
+    expect(reviewDispatches).toBe(0);
+    expect(projection.status).toBe("unknown_outcome");
+  });
+
   test("reconciles a durable reviewer receipt after a crash without redispatch", async () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
     const basePorts = successfulPorts();
-    const recoveredAuthor = await basePorts.dispatchAuthor({
-      idempotencyKey: "fixture",
-      workflow: "standard",
-      workflowDecisionId: "wfd_fixture",
-      decisionHash: "1".repeat(64),
-      stageId: "author",
-      exactAssignment: {
-        role: "author",
-        alias: "openai-builder",
-        provider: "openai",
-        family: "openai",
-        resolvedModel: "configured-openai-builder",
-        capabilityTier: "implementation",
-        reason: "fixture",
-      },
-      projectDir: root,
-      source: {
-        taskId: "fixture",
-        runId: "fixture",
-        workspace: "w1",
-        tabId: "w1:t1",
-        paneId: "w1:p1",
-      },
-      task: "fixture",
-    });
     let reviewDispatches = 0;
     let recoveredReview: StandardReviewOutcome | undefined;
     const ports: StandardRuntimePorts = {
       dispatchAuthor: basePorts.dispatchAuthor,
-      async readBackAuthor() {
-        return { status: "found", outcome: recoveredAuthor };
+      async readBackAuthor(request) {
+        return {
+          status: "found",
+          outcome: await basePorts.dispatchAuthor(request),
+        };
       },
       async review(prompt, assignment, execution) {
         reviewDispatches += 1;
@@ -546,6 +586,7 @@ describe("standard runtime integration", () => {
             receipt: {
               accepted: true,
               idempotencyStatus: "accepted",
+              identity: firstmateDispatchIdentity(request),
               firstmateTaskId: "quick-author-1",
               workerTarget: "w1:p2",
               evidencePath: "/tmp/quick-author-1.json",
@@ -553,6 +594,24 @@ describe("standard runtime integration", () => {
             },
             summary: `author=${request.exactAssignment.family}`,
             quickRecordPath: "/tmp/quick-author-1.json",
+          };
+        },
+        async readBackAuthor(request) {
+          return {
+            status: "found" as const,
+            outcome: {
+              receipt: {
+                accepted: true as const,
+                idempotencyStatus: "duplicate" as const,
+                identity: firstmateDispatchIdentity(request),
+                firstmateTaskId: "quick-author-1",
+                workerTarget: "w1:p2",
+                evidencePath: "/tmp/quick-author-1.json",
+                reason: null,
+              },
+              summary: `author=${request.exactAssignment.family}`,
+              quickRecordPath: "/tmp/quick-author-1.json",
+            },
           };
         },
         async review(_prompt, assignment, execution) {
