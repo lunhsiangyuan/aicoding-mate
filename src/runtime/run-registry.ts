@@ -3,9 +3,11 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -198,11 +200,19 @@ export class FileRunRegistry {
     mkdirSync(dirname(runDir), { recursive: true });
 
     if (existsSync(runDir)) {
+      if (this.#recoverUnpublishedRunDir(runId)) {
+        return this.openOrCreateRun(input);
+      }
       return this.#coalescedOrOpened(runId, input.now);
     }
 
+    const stagingDir = join(
+      dirname(runDir),
+      `.${runId}.staging-${process.pid}-${randomUUID()}`,
+    );
+
     try {
-      mkdirSync(runDir);
+      mkdirSync(stagingDir);
     } catch (error) {
       if (isNodeError(error) && error.code === "EEXIST") {
         return this.#coalescedOrOpened(runId, input.now);
@@ -210,15 +220,12 @@ export class FileRunRegistry {
       throw error;
     }
 
-    const lease = this.#acquireLeaseForRun(
+    const lease = makeLease(
       runId,
       input.owner,
       input.leaseTtlMs,
       input.now,
     );
-    if (lease === null) {
-      return this.#coalescedOrOpened(runId, input.now);
-    }
 
     const firstAttempt: AttemptRecord = {
       id: "attempt-1",
@@ -243,7 +250,7 @@ export class FileRunRegistry {
         idempotencyKey: canonicalIdempotencyKey(input.intent),
       },
     });
-    this.#appendEvent(runId, event);
+    this.#appendEventAt(join(stagingDir, "events.jsonl"), event);
 
     const run: RunProjection = {
       schemaVersion: 1,
@@ -261,7 +268,20 @@ export class FileRunRegistry {
         headHash: event.hash,
       },
     };
-    this.#writeProjection(run);
+    this.#writeProjectionAt(run, stagingDir);
+    this.#writeLeaseFileAt(lease, join(stagingDir, "lease"));
+    try {
+      renameSync(stagingDir, runDir);
+    } catch (error) {
+      rmSync(stagingDir, { recursive: true, force: true });
+      if (
+        isNodeError(error)
+        && (error.code === "EEXIST" || error.code === "ENOTEMPTY")
+      ) {
+        return this.#coalescedOrOpened(runId, input.now);
+      }
+      throw error;
+    }
     return { kind: "created", run, lease };
   }
 
@@ -291,7 +311,7 @@ export class FileRunRegistry {
   }
 
   releaseLease(lease: RegistryLease): void {
-    this.#assertLease(lease);
+    this.#assertLeaseToken(lease);
     rmSync(this.#leasePath(lease.runId), { recursive: true, force: true });
   }
 
@@ -556,7 +576,7 @@ export class FileRunRegistry {
     payload: { readonly [key: string]: JsonValue },
     apply: (run: RunProjection, activeAttempt: AttemptRecord) => RunProjection,
   ): RunProjection {
-    this.#assertLease(lease);
+    this.#assertLease(lease, at);
     const run = this.readRun(lease.runId);
     if (run === null) {
       throw new Error("run_projection_missing");
@@ -594,23 +614,10 @@ export class FileRunRegistry {
     leaseTtlMs: number,
     now: string,
   ): RegistryLease | null {
-    if (leaseTtlMs <= 0) {
-      throw new Error("lease_ttl_must_be_positive");
-    }
     const leasePath = this.#leasePath(runId);
     mkdirSync(dirname(leasePath), { recursive: true });
     const acquiredAtMs = Date.parse(now);
-    if (!Number.isFinite(acquiredAtMs)) {
-      throw new Error("invalid_now");
-    }
-    const token = randomUUID();
-    const lease: RegistryLease = {
-      runId,
-      owner,
-      token,
-      acquiredAt: now,
-      expiresAt: new Date(acquiredAtMs + leaseTtlMs).toISOString(),
-    };
+    const lease = makeLease(runId, owner, leaseTtlMs, now);
 
     if (tryCreateLeaseDir(leasePath)) {
       this.#writeLeaseFile(lease);
@@ -622,7 +629,7 @@ export class FileRunRegistry {
       return null;
     }
 
-    const expiredPath = `${leasePath}.expired-${token}`;
+    const expiredPath = `${leasePath}.expired-${lease.token}`;
     try {
       renameSync(leasePath, expiredPath);
     } catch {
@@ -640,11 +647,23 @@ export class FileRunRegistry {
     return lease;
   }
 
-  #assertLease(lease: RegistryLease): void {
+  #assertLease(lease: RegistryLease, now: string): void {
+    const current = this.#assertLeaseToken(lease);
+    const nowMs = Date.parse(now);
+    if (!Number.isFinite(nowMs)) {
+      throw new Error("invalid_now");
+    }
+    if (Date.parse(current.expiresAt) <= nowMs) {
+      throw new Error("lease_expired");
+    }
+  }
+
+  #assertLeaseToken(lease: RegistryLease): LeaseFile {
     const current = this.#readLease(lease.runId);
     if (current === null || current.token !== lease.token) {
       throw new Error("lease_not_held");
     }
+    return current;
   }
 
   #readLease(runId: string): LeaseFile | null {
@@ -656,11 +675,15 @@ export class FileRunRegistry {
   }
 
   #writeLeaseFile(lease: RegistryLease): void {
+    this.#writeLeaseFileAt(lease, this.#leasePath(lease.runId));
+  }
+
+  #writeLeaseFileAt(lease: RegistryLease, leasePath: string): void {
     const leaseFile: LeaseFile = {
       schemaVersion: 1,
       ...lease,
     };
-    const path = join(this.#leasePath(lease.runId), "lease.json");
+    const path = join(leasePath, "lease.json");
     atomicWriteJson(path, leaseFile);
     const readback = parseLeaseFile(readJson(path));
     if (readback.token !== lease.token) {
@@ -669,26 +692,48 @@ export class FileRunRegistry {
   }
 
   #appendEvent(runId: string, event: StoredLineageEvent): void {
+    this.#appendEventAt(this.#eventsPath(runId), event);
+  }
+
+  #appendEventAt(path: string, event: StoredLineageEvent): void {
     appendFileSync(
-      this.#eventsPath(runId),
+      path,
       `${stableStringify(event)}\n`,
       "utf8",
     );
-    const last = readLastLineageEvent(this.#eventsPath(runId));
+    const last = readLastLineageEvent(path);
     if (last.hash !== event.hash || last.prevHash !== event.prevHash) {
       throw new Error("lineage_readback_mismatch");
     }
   }
 
   #writeProjection(run: RunProjection): void {
-    atomicWriteJson(this.#projectionPath(run.runId), run);
-    const readback = this.readRun(run.runId);
+    this.#writeProjectionAt(run, this.#runDir(run.runId));
+  }
+
+  #writeProjectionAt(run: RunProjection, runDir: string): void {
+    const projectionPath = join(runDir, "projection.json");
+    atomicWriteJson(projectionPath, run);
+    const readback = parseRunProjection(readJson(projectionPath));
+    assertRunProjectionIntegrity(run.runId, readback);
+    assertLineageIntegrity(readback, join(runDir, "events.jsonl"));
     if (
-      readback === null ||
       stableStringify(readback) !== stableStringify(run)
     ) {
       throw new Error("projection_readback_mismatch");
     }
+  }
+
+  #recoverUnpublishedRunDir(runId: string): boolean {
+    const runDir = this.#runDir(runId);
+    if (existsSync(this.#projectionPath(runId))) {
+      return false;
+    }
+    if (!isProvablyUnpublishedRunDir(runDir)) {
+      return false;
+    }
+    rmSync(runDir, { recursive: true, force: true });
+    return true;
   }
 
   #runDir(runId: string): string {
@@ -867,6 +912,60 @@ function tryCreateLeaseDir(path: string): boolean {
     }
     throw error;
   }
+}
+
+function makeLease(
+  runId: string,
+  owner: string,
+  leaseTtlMs: number,
+  now: string,
+): RegistryLease {
+  if (leaseTtlMs <= 0) {
+    throw new Error("lease_ttl_must_be_positive");
+  }
+  const acquiredAtMs = Date.parse(now);
+  if (!Number.isFinite(acquiredAtMs)) {
+    throw new Error("invalid_now");
+  }
+  return {
+    runId,
+    owner,
+    token: randomUUID(),
+    acquiredAt: now,
+    expiresAt: new Date(acquiredAtMs + leaseTtlMs).toISOString(),
+  };
+}
+
+function isProvablyUnpublishedRunDir(runDir: string): boolean {
+  return isProvablyUnpublishedRunDirEntry(runDir, "");
+}
+
+function isProvablyUnpublishedRunDirEntry(
+  absolutePath: string,
+  relativePath: string,
+): boolean {
+  const stat = statSync(absolutePath);
+  if (!stat.isDirectory()) {
+    if (relativePath === "events.jsonl") {
+      return stat.size === 0;
+    }
+    return (
+      relativePath === "lease/lease.json" ||
+      relativePath.startsWith("lease/lease.json.tmp-")
+    );
+  }
+  if (relativePath !== "" && relativePath !== "lease") {
+    return false;
+  }
+  return readdirSync(absolutePath).every((name) => {
+    const childRelativePath = relativePath === ""
+      ? name
+      : `${relativePath}/${name}`;
+    return isProvablyUnpublishedRunDirEntry(
+      join(absolutePath, name),
+      childRelativePath,
+    );
+  });
 }
 
 function atomicWriteJson(path: string, value: JsonValue | RunProjection | LeaseFile): void {

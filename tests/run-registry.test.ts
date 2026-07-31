@@ -1,4 +1,10 @@
-import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  mkdtempSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -39,7 +45,10 @@ function registryRoot(): string {
   return mkdtempSync(join(tmpdir(), "aicoding-mate-run-registry-"));
 }
 
-function createRun(now = "2026-07-30T16:00:00.000Z"): {
+function createRun(
+  now = "2026-07-30T16:00:00.000Z",
+  leaseTtlMs = 10 * 60_000,
+): {
   readonly root: string;
   readonly registry: FileRunRegistry;
   readonly run: RunProjection;
@@ -50,7 +59,7 @@ function createRun(now = "2026-07-30T16:00:00.000Z"): {
   const opened = registry.openOrCreateRun({
     intent: baseIntent,
     owner: "test-owner",
-    leaseTtlMs: 60_000,
+    leaseTtlMs,
     now,
   });
   expect(opened.kind).toBe("created");
@@ -102,7 +111,7 @@ describe("filesystem run registry", () => {
   });
 
   test("creates one canonical run and coalesces duplicate active and completed intents", () => {
-    const { registry, run } = createRun();
+    const { registry, run, lease } = createRun();
 
     const duplicateActive = registry.openOrCreateRun({
       intent: {
@@ -117,16 +126,6 @@ describe("filesystem run registry", () => {
     expect(duplicateActive.run.runId).toBe(run.runId);
     expect(duplicateActive.lease).toBeNull();
 
-    const lease = registry.acquireRunLease({
-      runId: run.runId,
-      owner: "finisher",
-      leaseTtlMs: 60_000,
-      now: "2026-07-30T16:02:00.000Z",
-    });
-    expect(lease).not.toBeNull();
-    if (lease === null) {
-      throw new Error("expected lease");
-    }
     const completed = registry.completeAttempt(lease, {
       readback: foundReadback(run),
       now: "2026-07-30T16:02:01.000Z",
@@ -145,8 +144,74 @@ describe("filesystem run registry", () => {
     );
   });
 
+  test("recovers an unpublished initial directory before creating the run", () => {
+    const root = registryRoot();
+    const registry = new FileRunRegistry({ rootDir: root });
+    const runId = `run-${canonicalIntentFingerprint(baseIntent)}`;
+    const runDir = join(root, "runs", runId);
+    mkdirSync(join(runDir, "lease"), { recursive: true });
+    writeFileSync(join(runDir, "events.jsonl"), "", "utf8");
+    writeFileSync(
+      join(runDir, "lease", "lease.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        runId,
+        owner: "crashed-owner",
+        token: "crashed-token",
+        acquiredAt: "2026-07-30T15:59:59.000Z",
+        expiresAt: "2026-07-30T16:00:59.000Z",
+      }),
+      "utf8",
+    );
+
+    const opened = registry.openOrCreateRun({
+      intent: baseIntent,
+      owner: "replacement-owner",
+      leaseTtlMs: 60_000,
+      now: "2026-07-30T16:00:00.000Z",
+    });
+
+    expect(opened.kind).toBe("created");
+    expect(opened.run.runId).toBe(runId);
+    expect(readFileSync(join(runDir, "events.jsonl"), "utf8").trim())
+      .not.toBe("");
+    expect(existsSync(join(runDir, "projection.json"))).toBe(true);
+    if (opened.kind !== "created") {
+      throw new Error("expected created run");
+    }
+    expect(opened.lease.owner).toBe("replacement-owner");
+  });
+
+  test("does not delete a projection-missing directory with lineage evidence", () => {
+    const root = registryRoot();
+    const registry = new FileRunRegistry({ rootDir: root });
+    const runId = `run-${canonicalIntentFingerprint(baseIntent)}`;
+    const runDir = join(root, "runs", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, "events.jsonl"),
+      "{\"type\":\"run_created\"}\n",
+      "utf8",
+    );
+
+    expect(() =>
+      registry.openOrCreateRun({
+        intent: baseIntent,
+        owner: "replacement-owner",
+        leaseTtlMs: 60_000,
+        now: "2026-07-30T16:00:00.000Z",
+      })
+    ).toThrow("run_projection_missing");
+    expect(readFileSync(join(runDir, "events.jsonl"), "utf8")).toBe(
+      "{\"type\":\"run_created\"}\n",
+    );
+  });
+
   test("lease acquisition is exclusive and expired takeover invalidates the old token", () => {
-    const { registry, run, lease } = createRun();
+    const { registry, run, lease } = createRun(
+      "2026-07-30T16:00:00.000Z",
+      60_000,
+    );
 
     const blocked = registry.acquireRunLease({
       runId: run.runId,
@@ -155,6 +220,11 @@ describe("filesystem run registry", () => {
       now: "2026-07-30T16:00:30.000Z",
     });
     expect(blocked).toBeNull();
+
+    expect(() =>
+      registry.markRunning(lease, { now: "2026-07-30T16:01:00.000Z" }),
+    ).toThrow("lease_expired");
+    expect(registry.readRun(run.runId)?.lineage.eventCount).toBe(1);
 
     const takeover = registry.acquireRunLease({
       runId: run.runId,
