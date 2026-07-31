@@ -181,9 +181,12 @@ export function firstmateDispatchReceiptMatches(
   receipt: FirstmateDispatchReceipt,
 ): boolean {
   if (!receipt.accepted) return false;
-  return JSON.stringify(receipt.identity) === JSON.stringify(
-    firstmateDispatchIdentity(request),
-  );
+  const expected = firstmateDispatchIdentity(request);
+  return receipt.identity.idempotencyKey === expected.idempotencyKey
+    && receipt.identity.workflowDecisionId === expected.workflowDecisionId
+    && receipt.identity.decisionHash === expected.decisionHash
+    && receipt.identity.stageId === expected.stageId
+    && receipt.identity.exactAssignmentHash === expected.exactAssignmentHash;
 }
 
 export function selectedTextHash(selectedText: string): string {

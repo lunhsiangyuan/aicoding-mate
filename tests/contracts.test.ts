@@ -4,6 +4,8 @@ import {
   CONTEXT_SELECTION_MAX_CHARS,
   assertDecisionReadyReport,
   availabilitySnapshotHash,
+  firstmateDispatchIdentity,
+  firstmateDispatchReceiptMatches,
   injectConfirmedCapsule,
   isAllowedBranchTranscriptEntryKind,
   routingDeterminismKey,
@@ -15,6 +17,7 @@ import {
   type ConfirmedContextCapsule,
   type ContextCapsule,
   type DecisionReadyReport,
+  type FirstmateDispatchRequest,
   type SourceLineage,
 } from "../src/contracts/index.ts";
 
@@ -66,6 +69,47 @@ function acceptingPort(
 }
 
 describe("shared contracts", () => {
+  test("matches a Firstmate dispatch identity independent of JSON key order", () => {
+    const request: FirstmateDispatchRequest = {
+      idempotencyKey: "acm-dispatch-order-independent",
+      workflow: "standard",
+      workflowDecisionId: "wfd_order_independent",
+      decisionHash: "1".repeat(64),
+      stageId: "author",
+      exactAssignment: {
+        role: "author",
+        alias: "openai-builder",
+        provider: "openai",
+        family: "openai",
+        resolvedModel: "configured-openai-builder",
+        capabilityTier: "implementation",
+        reason: "Firstmate exact assignment",
+      },
+      projectDir: "/tmp/project",
+      source,
+      task: "唯讀驗證 decision identity",
+    };
+    const identity = firstmateDispatchIdentity(request);
+
+    expect(
+      firstmateDispatchReceiptMatches(request, {
+        accepted: true,
+        idempotencyStatus: "accepted",
+        identity: {
+          exactAssignmentHash: identity.exactAssignmentHash,
+          stageId: identity.stageId,
+          decisionHash: identity.decisionHash,
+          workflowDecisionId: identity.workflowDecisionId,
+          idempotencyKey: identity.idempotencyKey,
+        },
+        firstmateTaskId: "quick-order-independent",
+        workerTarget: "w1:p2",
+        evidencePath: "/tmp/quick-order-independent.json",
+        reason: null,
+      }),
+    ).toBe(true);
+  });
+
   test("routing key includes the full availability snapshot", () => {
     const snapshot: AvailabilitySnapshot = {
       id: "availability-1",
