@@ -8,6 +8,14 @@ import {
   workflowDispatchIdempotencyKey,
 } from "../authority/firstmate-decisions.ts";
 import {
+  FileFirstmateDecisionAuthority,
+  isFirstmateDecisionReceipt,
+  resolveFirstmateAuthorityRoot,
+  verifyFirstmateDecisionReceipt,
+  type FirstmateDecisionAuthorityPort,
+  type FirstmateDecisionReceipt,
+} from "../authority/firstmate-decision-authority.ts";
+import {
   parseHerdrBranchContext,
   type BranchFailureReason,
   type ParsedHerdrBranchContext,
@@ -40,6 +48,7 @@ export interface CodexReviewCommandOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => string;
   readonly ports?: CodexReviewCommandPorts;
+  readonly decisionAuthority?: FirstmateDecisionAuthorityPort;
 }
 
 export interface CodexReviewCommandPorts {
@@ -97,6 +106,7 @@ export type CodexReviewCommandFailureReason =
   | "invalid_context_json"
   | "context_not_object"
   | "firstmate_source_run_not_found"
+  | "firstmate_decision_issuance_failed"
   | "app_server_unavailable"
   | "capsule_persist_failed"
   | "canonical_review_active"
@@ -176,6 +186,26 @@ export async function runCodexReviewFromHerdrSelection(
     source: enriched.value.source,
     reviewer,
   });
+  const decisionAuthority =
+    options.decisionAuthority
+    ?? new FileFirstmateDecisionAuthority({
+      rootDir: resolveFirstmateAuthorityRoot(stateDir, options.env),
+      now,
+    });
+  let workflowDecisionReceipt: FirstmateDecisionReceipt;
+  try {
+    workflowDecisionReceipt = decisionAuthority.issueDecision(workflowDecision);
+    if (
+      decisionAuthority.readDecision(
+        workflowDecision,
+        workflowDecisionReceipt.receiptPath,
+      ) === undefined
+    ) {
+      return fail("firstmate_decision_issuance_failed");
+    }
+  } catch {
+    return fail("firstmate_decision_issuance_failed");
+  }
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
   });
@@ -207,6 +237,7 @@ export async function runCodexReviewFromHerdrSelection(
   const capsuleInput = reviewCapsuleInput(
     enriched.value,
     workflowDecision,
+    workflowDecisionReceipt,
     opened.run.runId,
     dispatchKey,
     now,
@@ -340,12 +371,14 @@ export const runCodexReviewCommand = runCodexReviewFromHerdrSelection;
 function reviewCapsuleInput(
   parsed: ParsedHerdrBranchContext,
   workflowDecision: WorkflowDecisionEnvelope,
+  workflowDecisionReceipt: FirstmateDecisionReceipt,
   canonicalRunId: string,
   idempotencyKey: string,
   now: () => string,
 ): ReviewCapsuleInput {
   return {
     workflowDecision,
+    workflowDecisionReceipt,
     canonicalRunId,
     idempotencyKey,
     source: {
@@ -500,11 +533,20 @@ function isReviewCapsule(value: unknown): value is ReviewCapsule {
       !== "canonical_run_registry_verified"
     || typeof value.authority.canonicalRunId !== "string"
     || typeof value.authority.idempotencyKey !== "string"
+    || !isFirstmateDecisionReceipt(value.workflowDecisionReceipt)
   ) {
     return false;
   }
   try {
     assertWorkflowDecisionEnvelope(value.workflowDecision);
+    if (
+      !verifyFirstmateDecisionReceipt(
+        value.workflowDecision,
+        value.workflowDecisionReceipt,
+      )
+    ) {
+      return false;
+    }
   } catch {
     return false;
   }

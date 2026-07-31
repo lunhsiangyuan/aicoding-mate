@@ -17,6 +17,7 @@ import type {
 } from "../src/contracts/index.ts";
 import {
   createStandardRun,
+  defaultStandardRuntimePorts,
   hasFirstmateAuthorReadback,
   markStandardRunPresented,
   probeStandardAvailability,
@@ -193,10 +194,17 @@ describe("standard runtime integration", () => {
     expect(result.ok).toBe(true);
     expect(result.dedupeStatus).toBe("new");
     expect(observedRequest?.workflow).toBe("standard");
-    expect(observedRequest?.task).not.toContain("薄 adapter");
+    expect(observedRequest?.task).toContain("薄 adapter");
     expect(observedRequest?.task).toContain(
-      "至少三個 debugging hypotheses",
+      "至少 3 個 debugging hypotheses",
     );
+    expect(
+      result.record.workflowDecision?.executionPolicy,
+    ).toEqual({
+      adapterBehavior: "execute_exact_assignment_only",
+      namedSkillUnavailable: "equivalent_read_only_review",
+      minimumDebuggingHypotheses: 3,
+    });
     expect(observedRequest?.exactAssignment.role).toBe("author");
     expect(observedRequest?.workflowDecisionId).toBe(
       result.record.workflowDecision?.workflowDecisionId,
@@ -620,6 +628,117 @@ describe("standard runtime integration", () => {
     expect(result.ok).toBe(false);
     expect(dispatched).toBe(false);
     expect(result.record.blockers).toContain("standard_requires_herdr_pane");
+  });
+
+  test("rejects an unsafe raw author intent before even a fake dispatch port", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    let dispatched = false;
+    const result = await createStandardRun({
+      task: "分析架構，然後修改檔案並推送到遠端",
+      cwd: root,
+      env: {
+        ACM_STATE_DIR: join(root, "state"),
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+      },
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports: successfulPorts(() => {
+        dispatched = true;
+      }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(dispatched).toBe(false);
+    expect(result.record.blockers[0]).toContain("author_scope_invalid:");
+    expect(result.record.blockers[0]).toContain("修改");
+  });
+
+  test("does not dispatch when Firstmate decision issuance cannot be read back", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    let dispatched = false;
+    const result = await createStandardRun({
+      task: "分析 decision authority",
+      cwd: root,
+      env: {
+        ACM_STATE_DIR: join(root, "state"),
+        HERDR_PANE_ID: "w1:p1",
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+      },
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports: successfulPorts(() => {
+        dispatched = true;
+      }),
+      decisionAuthority: {
+        issueDecision() {
+          throw new Error("authority_store_unavailable");
+        },
+        readDecision() {
+          return undefined;
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(dispatched).toBe(false);
+    expect(result.record.authority.workflowAuthority).toBe("unverified");
+    expect(result.record.authority.runtimeAuthority).toBe("unverified");
+    expect(result.record.blockers).toContain(
+      "firstmate_decision_issuance_failed:authority_store_unavailable",
+    );
+  });
+
+  test("Claude adapter executes the exact assigned model despite an env override", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    const bin = join(root, "bin");
+    const argsPath = join(root, "claude-args");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "claude"),
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$@" > "${argsPath}"`,
+        "printf '%s\\n' '{\"conclusion\":\"ok\",\"impact\":\"ok\",\"nextAction\":\"ok\",\"limitations\":[],\"unknowns\":[]}'",
+      ].join("\n"),
+    );
+    chmodSync(join(bin, "claude"), 0o755);
+    const ports = defaultStandardRuntimePorts({
+      cwd: root,
+      projectDir: root,
+      env: {
+        ACM_CLAUDE_REVIEW_MODEL: "adapter-must-not-use-this",
+        PATH: bin,
+      },
+    });
+
+    const outcome = await ports.review(
+      "review",
+      {
+        role: "reviewer",
+        alias: "anthropic-reviewer",
+        provider: "anthropic",
+        family: "anthropic",
+        resolvedModel: "fable",
+        capabilityTier: "architecture",
+        reason: "Firstmate exact assignment",
+      },
+      {
+        workflowDecisionId: "wfd_test",
+        decisionHash: "1".repeat(64),
+        stageId: "reviewer",
+        idempotencyKey: "review-test",
+      },
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.model).toBe("fable");
+    expect(readFileSync(argsPath, "utf8")).toContain("fable");
+    expect(readFileSync(argsPath, "utf8")).not.toContain(
+      "adapter-must-not-use-this",
+    );
   });
 
   test("does not treat a Herdr workspace label as a lineage id", async () => {

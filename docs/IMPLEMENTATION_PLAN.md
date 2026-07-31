@@ -127,6 +127,8 @@ Status：完成。
 交付：
 
 - versioned decision envelope。
+- Firstmate authority store、Ed25519 signing identity 與 strict decision receipt read-back。
+- signed execution policy，固定 Adapter、named-skill fallback 與 debugging gate。
 - Firstmate-only workflow mutation API。
 - Author、Reviewer、Challenger、Judge、Report Composer 的完整 assignments。
 - Adapter contract 移除 model selection、fallback 與 workflow retry。
@@ -137,6 +139,7 @@ Status：完成。
 - 對 Adapter 注入 quota failure，只會得到 observation，不會發生私下 fallback。
 - 每個 worker 與 report 都能追溯到同一 decision version。
 - 修改 Adapter 不會改變 recipe、barrier 或停止條件。
+- decision receipt 驗證失敗時，所有 Adapter call counter 維持零。
 
 ### V2-02 Canonical Run Registry
 
@@ -162,7 +165,7 @@ Blocked by：V2-01 的 decision envelope identity。
 
 ### V2-03 Authority migration gate
 
-Status：核心受管 workflow 完成；保留實機回歸證據作 release gate。
+Status：核心受管 workflow 與 signed authority 完成；保留新 decision schema 的實機回歸證據作 release gate。
 
 Blocked by：V2-01、V2-02。
 
@@ -173,3 +176,4 @@ Blocked by：V2-01、V2-02。
 - 舊 v0.1 records 保持唯讀，不回填或偽造 v0.2 authority。
 - duplicate Standard dispatch 的回歸測試與實機證據。
 - 新 v0.2 record 只在 decision／registry／artifact strict read-back 通過後標示 verified。
+- 舊的未簽章 decision record 保持不可驗證，不回填 `firstmate_verified`。

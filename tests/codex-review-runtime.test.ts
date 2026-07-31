@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
+import { FileFirstmateDecisionAuthority } from "../src/authority/firstmate-decision-authority.ts";
 import { createFirstmateNativeReviewDecision } from "../src/authority/firstmate-decisions.ts";
 import { sourceLineageHash, type SourceLineage } from "../src/contracts/index.ts";
 import {
@@ -51,6 +52,10 @@ const exactAssignment = workflowDecision.roleAssignments.find(
 if (exactAssignment === undefined) {
   throw new Error("reviewer assignment missing");
 }
+const workflowDecisionReceipt = new FileFirstmateDecisionAuthority({
+  rootDir: mkdtempSync(join(tmpdir(), "firstmate-runtime-authority-")),
+  now: () => "2026-07-30T19:59:00.000Z",
+}).issueDecision(workflowDecision);
 
 const request: CodexReviewStartRequest = {
   workflowDecisionId: workflowDecision.workflowDecisionId,
@@ -79,6 +84,7 @@ const request: CodexReviewStartRequest = {
 
 const capsuleInput: ReviewCapsuleInput = {
   workflowDecision,
+  workflowDecisionReceipt,
   canonicalRunId: "run-canonical-review",
   idempotencyKey: request.idempotencyKey,
   source: request.source,

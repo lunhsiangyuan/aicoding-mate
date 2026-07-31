@@ -257,6 +257,40 @@ describe("Codex review command bridge", () => {
     expect(created).toBe(0);
   });
 
+  test("does not create the app-server when Firstmate decision issuance fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
+    const stateDir = join(root, "state", "aicoding-mate");
+    writeRunRecord(stateDir);
+    let appServerCreated = false;
+
+    const result = await runCodexReviewFromHerdrSelection({
+      contextJson: invocation(),
+      cwd: root,
+      env: {},
+      decisionAuthority: {
+        issueDecision() {
+          throw new Error("authority_store_unavailable");
+        },
+        readDecision() {
+          return undefined;
+        },
+      },
+      ports: {
+        createAppServerReviewPort() {
+          appServerCreated = true;
+          return fakeReviewPort();
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "firstmate_decision_issuance_failed",
+    });
+    expect(appServerCreated).toBe(false);
+  });
+
   test("fails closed without persistence or desktop launch when capsule verification fails", async () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
     const stateDir = join(root, "state", "aicoding-mate");

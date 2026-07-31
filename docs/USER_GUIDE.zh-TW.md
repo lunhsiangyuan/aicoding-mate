@@ -179,7 +179,18 @@ v0.2 有兩個核心：
 - Workflow Authority：Firstmate 是 Author、Reviewer、Judge、Report Composer 與 fallback 的唯一決策者。
 - Runtime Authority：同一 intent 只對應一個 canonical run；重送、timeout、crash 都先經 registry reconciliation。
 
-你通常不需要看 registry。只有想稽核或排錯時，才查看：
+你通常不需要看 authority store 或 registry。只有想稽核或排錯時，才查看：
+
+```text
+<FM_HOME>/aicoding-mate-authority/
+├── identity/
+│   ├── ed25519-private.pem
+│   └── ed25519-public.pem
+├── decisions/<workflow-decision-id>.json
+└── receipts/<workflow-decision-id>.json
+```
+
+不要分享 `ed25519-private.pem`。一般稽核只需 decision、receipt 與 public key；系統會自動核對 decision artifact hash、public-key fingerprint 與 signature。沒有 `FM_HOME` 時，authority store 位於 `state/aicoding-mate/firstmate-authority/`。
 
 ```text
 state/aicoding-mate/run-registry/runs/<canonical-run-id>/
@@ -197,7 +208,9 @@ workflowAuthority: firstmate_verified
 runtimeAuthority: canonical_run_registry_verified
 ```
 
-這兩個標記只有在 decision、artifact、registry 與 lineage 互相吻合時成立。Quick 是 Firstmate 的下游 primitive，接收同一個 idempotency key；Context Branch 是一次性確認 handoff，不會成為另一個決策者。
+這兩個標記只有在 signed decision receipt、artifact、registry 與 lineage 互相吻合時成立。若 decision issuance 失敗，畫面只會顯示 `unverified`，且不會先派模型。Quick 是 Firstmate 的下游 primitive，接收同一個 idempotency key；Context Branch 是一次性確認 handoff，不會成為另一個決策者。
+
+Standard 的原始目標會以明文進入 scope gate。你可以討論「deploy、寫入、credential」等架構風險；但若要求 worker 實際修改、推送或連線，Standard 會在派工前阻擋。需要真正修改時，應由主對話建立新的 implementation task，而不是把 Standard review 偷偷升級成寫入流程。
 
 ## 排錯
 
@@ -216,5 +229,7 @@ bun bin/aicoding-mate doctor
 - `durable_readback_failed`：record 未成功寫入或內容不符合 schema。
 - `run_lease_unavailable`：同一 canonical run 已有另一個程序持有執行權；目前程序不會重複派工。
 - `unknown_outcome`：外部接受狀態不明；必須先完成 read-back reconciliation。
+- `firstmate_decision_issuance_failed`：Firstmate decision 或簽章 receipt 無法持久化並讀回；任何 Adapter 都尚未啟動。
+- `author_scope_invalid`：Standard 原始目標包含可執行寫入或外部動作；請改成唯讀分析，或另建 implementation task。
 
 系統遇到這些狀態會 fail closed，不會把部分完成包裝成成功。

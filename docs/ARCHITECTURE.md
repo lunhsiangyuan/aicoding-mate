@@ -243,7 +243,9 @@ flowchart LR
     U["使用者 intent"] --> F["Firstmate<br/>唯一 Workflow Authority"]
     O["Capability observations"] --> F
     F --> D["Versioned Decision Envelope"]
-    D --> R["Run Registry<br/>唯一 Runtime Authority"]
+    D --> S["Firstmate Authority Store<br/>Ed25519 receipt"]
+    S --> R
+    R["Run Registry<br/>唯一 Runtime Authority"]
     R --> X["Mechanical Adapters"]
     X --> P["Codex／Claude／Cursor／Gemini"]
     P --> X
@@ -258,6 +260,14 @@ flowchart LR
 Firstmate 同時擁有 recipe、角色、model alias、fallback 與停止條件的寫入權。Model Router、Workflow Engine 與 Report Composer 是 Firstmate 控制平面的模組，不是平行的決策者。
 
 Adapter 的輸入是 immutable assignment，輸出是 observation／receipt。它可以說「指定模型不可用」，但不能把「不可用」改寫成「我替你換成另一個模型」。
+
+`WorkflowDecisionEnvelope` 內的 `executionPolicy` 另固定：
+
+- Adapter 只能 `execute_exact_assignment_only`。
+- named skill 不可用時是 fail closed，或使用 Firstmate 明確核准的等價唯讀 review。
+- debugging hypotheses 的最低數量。
+
+Decision envelope 先寫入 Firstmate authority store，再以本機 Ed25519 identity 簽署。workflow record 必須持有可獨立讀回的 decision artifact、public-key fingerprint 與 signature receipt；僅有 `authority: firstmate` 或 `decisionHash` 不足以標示 verified。
 
 ### Runtime Authority
 
@@ -293,7 +303,10 @@ readBack(dispatchReceipt | idempotencyKey) -> RuntimeObservation
 ### v0.2 實作邊界
 
 - Standard、Adversarial、Research 與 Codex Review 都先取得 Firstmate decision，再開啟或合併 canonical run。
+- 三者都必須先完成 Firstmate decision receipt 的 immutable write、signature verification 與 strict read-back；失敗時保持 `unverified`，且不可呼叫任何 Adapter。
 - Quick 是 Standard 交給 Firstmate 的執行 primitive；它沿用上層 dispatch idempotency key，完成結果可直接 read back，不再私下做 routing。
+- Standard 的原始目標以明文唯讀信封交給 Quick。scope gate 區分「討論危險動作」與「要求執行危險動作」；不使用 base64 或其他包裝繞過檢查。
 - Context Branch 不派模型角色，只保存 selection lineage、白話解釋與一次性確認 handoff；因此不建立第二個 workflow authority。
 - 目前 Run Registry 使用 filesystem lease、atomic write 與 append-only hash chain。程序在「外部已接受、receipt 尚未持久化」期間中斷時會 fail closed；只有 read-back 證明未派出才允許新 attempt。
 - 這不是跨主機 distributed transaction，也不宣稱 provider 具備 exactly-once；外部 provider 是否支援 idempotency 仍由 receipt/read-back 證據決定。
+- Firstmate signing identity 是本機單一使用者 trust anchor，不是遠端硬體 attestation；能證明本 authority store 發行與檔案未遭修改，但不宣稱抵抗已取得本機私鑰的攻擊者。

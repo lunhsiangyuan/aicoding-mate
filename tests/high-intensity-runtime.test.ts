@@ -323,6 +323,34 @@ describe("high-intensity runtime", () => {
     expect(result.record.calls).toEqual([]);
     expect(requests).toEqual([]);
   });
+
+  test("does not call any model when Firstmate decision issuance fails", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
+    const requests: HighIntensityModelRequest[] = [];
+    const result = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      modelPort: scriptedPort(requests),
+      now: () => "2026-07-31T01:00:00.000Z",
+      decisionAuthority: {
+        issueDecision() {
+          throw new Error("authority_store_unavailable");
+        },
+        readDecision() {
+          return undefined;
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(requests).toHaveLength(0);
+    expect(result.record.authority.workflowAuthority).toBe("unverified");
+    expect(result.record.authority.runtimeAuthority).toBe("unverified");
+    expect(result.record.blockers).toContain(
+      "firstmate_decision_issuance_failed:authority_store_unavailable",
+    );
+  });
 });
 
 function scriptedPort(requests: HighIntensityModelRequest[]): HighIntensityModelPort {

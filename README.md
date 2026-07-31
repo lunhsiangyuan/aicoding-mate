@@ -132,7 +132,9 @@ v0.2 落實兩個 authority：
 - **Workflow Authority**：Firstmate 是 Author、Reviewer、Challenger、Judge、Report Composer、fallback 與停止條件的唯一 decision writer；Adapter 只回報能力與執行 exact assignment。
 - **Runtime Authority**：Run Registry 以 stable idempotency key 管理 canonical run、attempt、dispatch receipt、lease、`unknown_outcome` reconciliation 與 append-only hash-chain lineage。
 
-受管 workflow 的 durable record 只有在 decision、registry、artifact 與 lineage 全部讀回一致後，才標示 `firstmate_verified` 與 `canonical_run_registry_verified`。逾時或 receipt 遺失會進入 `unknown_outcome`，先查既有結果，不直接重派。詳細契約與限制見 [產品規格第 9 節](docs/SPEC.md#9-v02-核心兩個-authority)。
+Firstmate decision 不再只靠 record 裡的字串宣稱來源。控制平面會把 immutable decision 寫入 Firstmate authority store，以本機 Ed25519 identity 簽署 receipt，並在任何 Adapter 啟動前重新讀回驗簽。模型、named-skill fallback 與 debugging gate 都屬於 signed `executionPolicy`；Adapter 不可用環境變數覆寫 exact assignment。
+
+受管 workflow 的 durable record 只有在 decision signature、registry、artifact 與 lineage 全部讀回一致後，才標示 `firstmate_verified` 與 `canonical_run_registry_verified`。逾時或 receipt 遺失會進入 `unknown_outcome`，先查既有結果，不直接重派。詳細契約與限制見 [產品規格第 9 節](docs/SPEC.md#9-v02-核心兩個-authority)。
 
 安裝或 link Herdr plugin 代表在本機以使用者權限執行此 repository 的程式碼；請先檢查 `herdr-plugin.toml`、`bin/aicoding-mate` 與 `src/`。
 

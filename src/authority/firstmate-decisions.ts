@@ -145,6 +145,13 @@ export function createFirstmateWorkflowDecision(
       reason:
         "Adapters only report availability or execution observations; Firstmate must issue a new decision before fallback.",
     },
+    executionPolicy: {
+      adapterBehavior: "execute_exact_assignment_only",
+      namedSkillUnavailable: highIntensity
+        ? "fail_closed"
+        : "equivalent_read_only_review",
+      minimumDebuggingHypotheses: highIntensity ? 0 : 3,
+    },
     reportComposer: {
       owner: "firstmate",
       role: "report_composer",
@@ -198,6 +205,11 @@ export function createFirstmateNativeReviewDecision(
       behavior: "new_decision_required",
       reason:
         "Codex review adapter may report execution failure, but only Firstmate may issue a different reviewer assignment.",
+    },
+    executionPolicy: {
+      adapterBehavior: "execute_exact_assignment_only",
+      namedSkillUnavailable: "fail_closed",
+      minimumDebuggingHypotheses: 0,
     },
     reportComposer: {
       owner: "firstmate",

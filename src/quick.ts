@@ -560,8 +560,33 @@ function preflightRuntime(firstmateRoot: string, projectDir: string, env: NodeJS
   return blockers;
 }
 
-function validateQuickTaskScope(task: string, projectDir: string): string | undefined {
-  const withoutNegatedBoundaries = task
+const standardReadOnlyTaskStart = "[ACM_STANDARD_READ_ONLY_TASK]";
+const standardReadOnlyTaskEnd = "[/ACM_STANDARD_READ_ONLY_TASK]";
+
+export function wrapStandardReadOnlyTask(task: string): string {
+  return [
+    standardReadOnlyTaskStart,
+    task,
+    standardReadOnlyTaskEnd,
+  ].join("\n");
+}
+
+export function validateQuickTaskScope(
+  task: string,
+  projectDir: string,
+): string | undefined {
+  const embedded = extractStandardReadOnlyTask(task);
+  if (embedded !== undefined) {
+    const embeddedBlocker = validateStandardReadOnlyTaskScope(embedded);
+    if (embeddedBlocker !== undefined) return embeddedBlocker;
+  }
+  const taskForLexicalValidation = embedded === undefined
+    ? task
+    : task.replace(
+        `${standardReadOnlyTaskStart}\n${embedded}\n${standardReadOnlyTaskEnd}`,
+        "唯讀分析原始目標",
+      );
+  const withoutNegatedBoundaries = taskForLexicalValidation
     .replace(
       /\b(?:do not|don't|never)\s+(?:write|edit|modify|change|create|add|update|fix|commit|push|deploy|publish|release|send|email|message|share|upload|invite|grant|revoke|delete|remove|drop|destroy|restart|stop|pay|purchase|merge|submit|post|archive|move|copy|download|install|run|execute)\b/gi,
       "",
@@ -596,6 +621,31 @@ function validateQuickTaskScope(task: string, projectDir: string): string | unde
   );
   if (unapprovedClause) {
     return `Quick scout 無法把複合動作「${unapprovedClause}」判定為唯讀；請拆成單一唯讀任務，或改用正式 workflow。`;
+  }
+  return undefined;
+}
+
+function extractStandardReadOnlyTask(task: string): string | undefined {
+  const start = task.indexOf(`${standardReadOnlyTaskStart}\n`);
+  if (start < 0) return undefined;
+  const contentStart = start + standardReadOnlyTaskStart.length + 1;
+  const end = task.indexOf(`\n${standardReadOnlyTaskEnd}`, contentStart);
+  if (end < 0) return undefined;
+  if (
+    task.indexOf(`${standardReadOnlyTaskStart}\n`, contentStart) >= 0
+    || task.indexOf(`\n${standardReadOnlyTaskEnd}`, end + 1) >= 0
+  ) {
+    return undefined;
+  }
+  return task.slice(contentStart, end);
+}
+
+function validateStandardReadOnlyTaskScope(task: string): string | undefined {
+  const actionable = task.match(
+    /(?:^|[，,；;。.\n]|\b(?:then|next)\b)\s*(?:(?:請|幫我|替我|務必|直接|順便|然後|接著|再)\s*)*(write|edit|modify|change|create|add|update|fix|commit|push|deploy|publish|release|send|email|message|share|upload|invite|grant|revoke|delete|remove|drop|destroy|restart|stop|pay|purchase|merge|submit|post|archive|move|copy|download|install|run|execute|curl|wget|ssh|scp|rsync|connect|request|fetch|修改|寫入|編輯|變更|建立|新增|更新|修復|提交|推送|部署|發布|寄信|發信|傳送|分享|上傳|邀請|授權|撤銷|刪除|清除|付款|購買|合併|送出|貼文|封存|移動|複製|下載|安裝|執行|連線)/i,
+  );
+  if (actionable) {
+    return `Standard author 的原始目標包含可執行動作「${actionable[1]}」；唯讀架構流程不接受這項意圖。`;
   }
   return undefined;
 }

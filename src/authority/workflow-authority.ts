@@ -45,6 +45,14 @@ export interface WorkflowFallbackPolicy {
   readonly reason: string;
 }
 
+export interface WorkflowExecutionPolicy {
+  readonly adapterBehavior: "execute_exact_assignment_only";
+  readonly namedSkillUnavailable:
+    | "equivalent_read_only_review"
+    | "fail_closed";
+  readonly minimumDebuggingHypotheses: number;
+}
+
 export interface WorkflowReportComposer {
   readonly owner: ReportComposerOwner;
   readonly role: "report_composer";
@@ -63,6 +71,7 @@ export interface WorkflowDecisionEnvelope {
   readonly maxRounds: number;
   readonly stopConditions: readonly string[];
   readonly fallbackPolicy: WorkflowFallbackPolicy;
+  readonly executionPolicy: WorkflowExecutionPolicy;
   readonly reportComposer: WorkflowReportComposer;
   readonly decisionHash: string;
 }
@@ -78,6 +87,7 @@ export interface WorkflowDecisionInput {
   readonly maxRounds: number;
   readonly stopConditions: readonly string[];
   readonly fallbackPolicy: WorkflowFallbackPolicy;
+  readonly executionPolicy: WorkflowExecutionPolicy;
   readonly reportComposer: WorkflowReportComposer;
 }
 
@@ -146,6 +156,12 @@ export function createWorkflowDecisionEnvelope(
     fallbackPolicy: {
       behavior: input.fallbackPolicy.behavior,
       reason: input.fallbackPolicy.reason,
+    },
+    executionPolicy: {
+      adapterBehavior: input.executionPolicy.adapterBehavior,
+      namedSkillUnavailable: input.executionPolicy.namedSkillUnavailable,
+      minimumDebuggingHypotheses:
+        input.executionPolicy.minimumDebuggingHypotheses,
     },
     reportComposer: {
       owner: input.reportComposer.owner,
@@ -217,6 +233,7 @@ export function assertWorkflowDecisionEnvelope(
     "stop_conditions_missing",
   );
   assertFallbackPolicy(envelope.fallbackPolicy);
+  assertExecutionPolicy(envelope.executionPolicy);
   assertReportComposer(envelope.reportComposer, roleAssignments);
   const expectedWorkflowDecisionId = workflowDecisionIdFor({
     workflowDecisionVersion,
@@ -230,6 +247,7 @@ export function assertWorkflowDecisionEnvelope(
     maxRounds,
     stopConditions,
     fallbackPolicy: envelope.fallbackPolicy,
+    executionPolicy: envelope.executionPolicy,
     reportComposer: envelope.reportComposer,
   });
   if (workflowDecisionId !== expectedWorkflowDecisionId) {
@@ -248,6 +266,7 @@ export function assertWorkflowDecisionEnvelope(
     maxRounds,
     stopConditions,
     fallbackPolicy: envelope.fallbackPolicy,
+    executionPolicy: envelope.executionPolicy,
     reportComposer: envelope.reportComposer,
   });
   if (envelope.decisionHash !== expectedDecisionHash) {
@@ -407,6 +426,28 @@ function assertFallbackPolicy(
     throw new Error("fallback_policy_not_new_decision_required");
   }
   requireString(policy.reason, "fallback_policy_reason_missing");
+}
+
+function assertExecutionPolicy(
+  value: unknown,
+): asserts value is WorkflowExecutionPolicy {
+  const policy = requireObject(value, "execution_policy_missing");
+  if (policy.adapterBehavior !== "execute_exact_assignment_only") {
+    throw new Error("execution_policy_adapter_behavior_invalid");
+  }
+  if (
+    policy.namedSkillUnavailable !== "equivalent_read_only_review"
+    && policy.namedSkillUnavailable !== "fail_closed"
+  ) {
+    throw new Error("execution_policy_named_skill_behavior_invalid");
+  }
+  if (
+    typeof policy.minimumDebuggingHypotheses !== "number"
+    || !Number.isInteger(policy.minimumDebuggingHypotheses)
+    || policy.minimumDebuggingHypotheses < 0
+  ) {
+    throw new Error("execution_policy_debugging_minimum_invalid");
+  }
 }
 
 function assertReportComposer(

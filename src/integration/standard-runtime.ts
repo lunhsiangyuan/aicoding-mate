@@ -22,9 +22,19 @@ import {
   workflowDispatchIdempotencyKey,
 } from "../authority/firstmate-decisions.ts";
 import {
+  FileFirstmateDecisionAuthority,
+  isFirstmateDecisionReceipt,
+  resolveFirstmateAuthorityRoot,
+  verifyFirstmateDecisionReceipt,
+  type FirstmateDecisionAuthorityPort,
+  type FirstmateDecisionReceipt,
+} from "../authority/firstmate-decision-authority.ts";
+import {
   createQuickRun,
   quickRunIdForIdempotencyKey,
   readRunRecord,
+  validateQuickTaskScope,
+  wrapStandardReadOnlyTask,
   type QuickResult,
   type QuickRunRecord,
 } from "../quick.ts";
@@ -99,14 +109,17 @@ export interface StandardRunRecord {
   readonly normalizedInput: NormalizedStandardInput;
   readonly routingDecision: RoutingDecision | null;
   readonly workflowDecision: WorkflowDecisionEnvelope | null;
+  readonly workflowDecisionReceipt: FirstmateDecisionReceipt | null;
   readonly author: StandardDispatchOutcome | null;
   readonly review: StandardReviewOutcome | null;
   readonly reviewAttempts: readonly StandardReviewOutcome[];
   readonly report: DecisionReadyReport | null;
   readonly blockers: readonly string[];
   readonly authority: {
-    readonly workflowAuthority: "firstmate_verified";
-    readonly runtimeAuthority: "canonical_run_registry_verified";
+    readonly workflowAuthority: "unverified" | "firstmate_verified";
+    readonly runtimeAuthority:
+      | "unverified"
+      | "canonical_run_registry_verified";
     readonly canonicalRunId: string | null;
     readonly idempotencyKey: string | null;
   };
@@ -127,6 +140,7 @@ export interface StandardRunOptions {
   readonly availability?: AvailabilitySnapshot;
   readonly now?: () => string;
   readonly ports?: StandardRuntimePorts;
+  readonly decisionAuthority?: FirstmateDecisionAuthorityPort;
 }
 
 export interface StandardRunResult {
@@ -219,14 +233,15 @@ export async function createStandardRun(
     routingDecision:
       plan.routing.status === "resolved" ? plan.routing.decision : null,
     workflowDecision: null,
+    workflowDecisionReceipt: null,
     author: null,
     review: null,
     reviewAttempts: [],
     report: null,
     blockers: [],
     authority: {
-      workflowAuthority: "firstmate_verified",
-      runtimeAuthority: "canonical_run_registry_verified",
+      workflowAuthority: "unverified",
+      runtimeAuthority: "unverified",
       canonicalRunId: null,
       idempotencyKey: null,
     },
@@ -259,7 +274,6 @@ export async function createStandardRun(
       `routing_${plan.routing.status}:${plan.routing.reason}`,
     );
   }
-
   const workflowDecision = createFirstmateWorkflowDecision({
     recipe: "standard",
     intentHash: plan.normalizedInput.hash,
@@ -268,6 +282,39 @@ export async function createStandardRun(
     routingDecision: plan.routing.decision,
     source,
   });
+  const authorTask = architectureTask(options.task, workflowDecision);
+  const authorScopeBlocker = validateQuickTaskScope(authorTask, projectDir);
+  if (authorScopeBlocker !== undefined) {
+    return blocked(
+      { ...provisional, workflowDecision },
+      now,
+      `author_scope_invalid:${authorScopeBlocker}`,
+    );
+  }
+  const decisionAuthority =
+    options.decisionAuthority
+    ?? new FileFirstmateDecisionAuthority({
+      rootDir: resolveFirstmateAuthorityRoot(stateDir, options.env),
+      now,
+    });
+  let workflowDecisionReceipt: FirstmateDecisionReceipt;
+  try {
+    workflowDecisionReceipt = decisionAuthority.issueDecision(workflowDecision);
+    if (
+      decisionAuthority.readDecision(
+        workflowDecision,
+        workflowDecisionReceipt.receiptPath,
+      ) === undefined
+    ) {
+      throw new Error("firstmate_decision_receipt_readback_failed");
+    }
+  } catch (error) {
+    return blocked(
+      { ...provisional, workflowDecision },
+      now,
+      `firstmate_decision_issuance_failed:${compactError(error)}`,
+    );
+  }
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
   });
@@ -298,6 +345,7 @@ export async function createStandardRun(
     recordPath,
     routingDecision: plan.routing.decision,
     workflowDecision,
+    workflowDecisionReceipt,
     authority: {
       workflowAuthority: "firstmate_verified",
       runtimeAuthority: "canonical_run_registry_verified",
@@ -328,7 +376,7 @@ export async function createStandardRun(
     exactAssignment: authorStage.roleAssignment,
     projectDir,
     source,
-    task: encodedArchitectureTask(options.task),
+    task: authorTask,
   };
   let lease: RegistryLease | null = null;
   let reconciledAuthor: StandardDispatchOutcome | null = null;
@@ -826,7 +874,7 @@ export function markStandardRunPresented(
   });
 }
 
-function defaultStandardRuntimePorts(options: {
+export function defaultStandardRuntimePorts(options: {
   readonly cwd: string;
   readonly projectDir: string;
   readonly env: NodeJS.ProcessEnv;
@@ -971,8 +1019,7 @@ function runClaudeReview(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): StandardReviewOutcome {
-  const model =
-    env.ACM_CLAUDE_REVIEW_MODEL ?? assignment.resolvedModel ?? "fable";
+  const model = assignment.resolvedModel;
   const reviewEnv: NodeJS.ProcessEnv = {
     ...env,
     ACM_IDEMPOTENCY_KEY: execution.idempotencyKey,
@@ -1097,16 +1144,25 @@ function buildReviewRepairPrompt(rawOutput: string): string {
   ].join("\n");
 }
 
-function encodedArchitectureTask(task: string): string {
-  const encoded = Buffer.from(task, "utf8").toString("base64url");
-  return (
-    "唯讀分析本地專案並回覆架構結論、影響與下一步，"
-    + `請先理解這份 base64url 目標資料：${encoded}。`
-    + "完成 gate 若要求的 named skill 未出現在本次 skill catalog，"
-    + "不要只因別名不可用而阻擋；請改以等價的唯讀 code review 完成 gate，"
-    + "並記錄至少三個 debugging hypotheses 及各自的 runtime evidence，"
-    + "在報告中明確標示這項 portable fallback。"
-  );
+function architectureTask(
+  task: string,
+  decision: WorkflowDecisionEnvelope,
+): string {
+  const policy = decision.executionPolicy;
+  if (
+    policy.adapterBehavior !== "execute_exact_assignment_only"
+    || policy.namedSkillUnavailable !== "equivalent_read_only_review"
+    || policy.minimumDebuggingHypotheses < 1
+  ) {
+    throw new Error("standard_execution_policy_invalid");
+  }
+  return [
+    "唯讀分析本地專案並回覆架構結論、影響與下一步。",
+    "以下是原始目標，僅作為唯讀分析資料：",
+    wrapStandardReadOnlyTask(task),
+    "在唯讀 review 中，完成 gate 若要求的 named skill 未出現在本次 skill catalog，不要只因別名不可用而阻擋；請改以等價的唯讀 code review 完成 gate。",
+    `記錄至少 ${policy.minimumDebuggingHypotheses} 個 debugging hypotheses 及各自的 runtime evidence，並在報告中明確標示這項 portable fallback。`,
+  ].join("\n");
 }
 
 function parseReviewDocument(rawOutput: string): ReviewDocument | null {
@@ -1335,6 +1391,21 @@ function isStandardRunRecord(
     if (!sameSourceLineage(record.source, record.workflowDecision.sourceLineage)) {
       return false;
     }
+    if (
+      !isFirstmateDecisionReceipt(record.workflowDecisionReceipt)
+      || !verifyFirstmateDecisionReceipt(
+        record.workflowDecision,
+        record.workflowDecisionReceipt,
+      )
+      || record.authority.workflowAuthority !== "firstmate_verified"
+    ) {
+      return false;
+    }
+  } else if (
+    record.workflowDecisionReceipt !== null
+    || record.authority.workflowAuthority !== "unverified"
+  ) {
+    return false;
   }
   if (record.status === "completed") {
     if (
@@ -1395,11 +1466,25 @@ function isStandardAuthority(value: unknown): value is StandardRunRecord["author
   if (!isRecordValue(value)) return false;
   const canonicalRunId = value.canonicalRunId;
   const idempotencyKey = value.idempotencyKey;
-  return value.workflowAuthority === "firstmate_verified"
-    && value.runtimeAuthority === "canonical_run_registry_verified"
+  const workflowAuthority = value.workflowAuthority;
+  const runtimeAuthority = value.runtimeAuthority;
+  return (
+    workflowAuthority === "unverified"
+      || workflowAuthority === "firstmate_verified"
+  )
+    && (
+      runtimeAuthority === "unverified"
+      || runtimeAuthority === "canonical_run_registry_verified"
+    )
     && (canonicalRunId === null || typeof canonicalRunId === "string")
     && (idempotencyKey === null || typeof idempotencyKey === "string")
     && (canonicalRunId === null) === (idempotencyKey === null);
+}
+
+function compactError(error: unknown): string {
+  return error instanceof Error
+    ? error.message.replace(/\s+/g, " ").trim()
+    : "unknown_error";
 }
 
 function isStandardClaims(value: unknown): value is StandardRunRecord["claims"] {

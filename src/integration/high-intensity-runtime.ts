@@ -18,6 +18,14 @@ import {
   workflowDispatchIdempotencyKey,
 } from "../authority/firstmate-decisions.ts";
 import {
+  FileFirstmateDecisionAuthority,
+  isFirstmateDecisionReceipt,
+  resolveFirstmateAuthorityRoot,
+  verifyFirstmateDecisionReceipt,
+  type FirstmateDecisionAuthorityPort,
+  type FirstmateDecisionReceipt,
+} from "../authority/firstmate-decision-authority.ts";
+import {
   FileRunRegistry,
   type RegistryLease,
   type RunProjection,
@@ -93,6 +101,7 @@ export interface HighIntensityRunRecord {
   readonly availability: AvailabilitySnapshot;
   readonly routingDecision: RoutingDecision | null;
   readonly workflowDecision: WorkflowDecisionEnvelope | null;
+  readonly workflowDecisionReceipt: FirstmateDecisionReceipt | null;
   readonly calls: readonly HighIntensityCallRecord[];
   readonly research: ResearchPartition | null;
   readonly coverage: CoverageReview | null;
@@ -100,8 +109,10 @@ export interface HighIntensityRunRecord {
   readonly report: DecisionReadyReport | null;
   readonly blockers: readonly string[];
   readonly authority: {
-    readonly workflowAuthority: "firstmate_verified";
-    readonly runtimeAuthority: "canonical_run_registry_verified";
+    readonly workflowAuthority: "unverified" | "firstmate_verified";
+    readonly runtimeAuthority:
+      | "unverified"
+      | "canonical_run_registry_verified";
     readonly canonicalRunId: string | null;
     readonly idempotencyKey: string | null;
   };
@@ -117,6 +128,7 @@ export interface HighIntensityRunOptions {
   readonly recipe?: "adversarial" | "research";
   readonly source?: SourceLineage;
   readonly now?: () => string;
+  readonly decisionAuthority?: FirstmateDecisionAuthorityPort;
 }
 
 export interface HighIntensityRunResult {
@@ -161,6 +173,7 @@ export async function createHighIntensityRun(
     availability: options.availability,
     routingDecision: routed.status === "resolved" ? routed.decision : null,
     workflowDecision: null,
+    workflowDecisionReceipt: null,
     calls: [],
     research: null,
     coverage: null,
@@ -168,8 +181,8 @@ export async function createHighIntensityRun(
     report: null,
     blockers: [],
     authority: {
-      workflowAuthority: "firstmate_verified",
-      runtimeAuthority: "canonical_run_registry_verified",
+      workflowAuthority: "unverified",
+      runtimeAuthority: "unverified",
       canonicalRunId: null,
       idempotencyKey: null,
     },
@@ -199,6 +212,30 @@ export async function createHighIntensityRun(
     routingDecision: routed.decision,
     source,
   });
+  const decisionAuthority =
+    options.decisionAuthority
+    ?? new FileFirstmateDecisionAuthority({
+      rootDir: resolveFirstmateAuthorityRoot(stateDir),
+      now,
+    });
+  let workflowDecisionReceipt: FirstmateDecisionReceipt;
+  try {
+    workflowDecisionReceipt = decisionAuthority.issueDecision(workflowDecision);
+    if (
+      decisionAuthority.readDecision(
+        workflowDecision,
+        workflowDecisionReceipt.receiptPath,
+      ) === undefined
+    ) {
+      throw new Error("firstmate_decision_receipt_readback_failed");
+    }
+  } catch (error) {
+    return blocked(
+      { ...provisional, workflowDecision },
+      now,
+      `firstmate_decision_issuance_failed:${compactAuthorityError(error)}`,
+    );
+  }
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
   });
@@ -227,6 +264,7 @@ export async function createHighIntensityRun(
     id,
     routingDecision: routed.decision,
     workflowDecision,
+    workflowDecisionReceipt,
     recordPath,
     authority: {
       workflowAuthority: "firstmate_verified",
@@ -890,6 +928,24 @@ function isHighIntensityRunRecord(
     } catch {
       return false;
     }
+    if (
+      !isFirstmateDecisionReceipt(record.workflowDecisionReceipt)
+      || !verifyFirstmateDecisionReceipt(
+        record.workflowDecision,
+        record.workflowDecisionReceipt,
+      )
+      || record.authority.workflowAuthority !== "firstmate_verified"
+    ) {
+      return false;
+    }
+  } else if (
+    record.workflowDecisionReceipt !== null
+    || (
+      isAuthorityRecord(record.authority)
+      && record.authority.workflowAuthority !== "unverified"
+    )
+  ) {
+    return false;
   }
   if (record.status === "completed") {
     if (
@@ -951,7 +1007,9 @@ function isHighIntensityCallRecord(value: unknown): boolean {
     && typeof call.idempotencyKey === "string";
 }
 
-function isAuthorityRecord(value: unknown): boolean {
+function isAuthorityRecord(
+  value: unknown,
+): value is HighIntensityRunRecord["authority"] {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const authority = value as Record<string, unknown>;
   const hasCanonicalIdentity =
@@ -962,9 +1020,21 @@ function isAuthorityRecord(value: unknown): boolean {
   const notReached =
     authority.canonicalRunId === null
     && authority.idempotencyKey === null;
-  return authority.workflowAuthority === "firstmate_verified"
-    && authority.runtimeAuthority === "canonical_run_registry_verified"
+  return (
+    authority.workflowAuthority === "unverified"
+      || authority.workflowAuthority === "firstmate_verified"
+  )
+    && (
+      authority.runtimeAuthority === "unverified"
+      || authority.runtimeAuthority === "canonical_run_registry_verified"
+    )
     && (hasCanonicalIdentity || notReached);
+}
+
+function compactAuthorityError(error: unknown): string {
+  return error instanceof Error
+    ? error.message.replace(/\s+/g, " ").trim()
+    : "unknown_error";
 }
 
 function isDecisionReadyReportCandidate(

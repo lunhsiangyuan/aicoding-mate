@@ -8,6 +8,11 @@ import {
   type WorkflowDecisionEnvelope,
   type WorkflowRoleAssignment,
 } from "../contracts/index.ts";
+import {
+  isFirstmateDecisionReceipt,
+  verifyFirstmateDecisionReceipt,
+  type FirstmateDecisionReceipt,
+} from "../authority/firstmate-decision-authority.ts";
 
 export type ReviewDelivery = "inline" | "detached";
 
@@ -141,6 +146,7 @@ export type CodexDesktopOpenResult =
 
 export interface ReviewCapsuleInput {
   readonly workflowDecision: WorkflowDecisionEnvelope;
+  readonly workflowDecisionReceipt: FirstmateDecisionReceipt;
   readonly canonicalRunId: string;
   readonly idempotencyKey: string;
   readonly source: ReviewSource;
@@ -172,6 +178,7 @@ export interface ReviewCapsule {
   readonly capsuleId: string;
   readonly createdAt: string;
   readonly workflowDecision: WorkflowDecisionEnvelope;
+  readonly workflowDecisionReceipt: FirstmateDecisionReceipt;
   readonly source: {
     readonly taskId: string;
     readonly runId: string;
@@ -231,6 +238,7 @@ export type ReviewCapsuleFailureReason =
   | "source_run_lineage_mismatch"
   | "firstmate_session_missing"
   | "source_lineage_missing"
+  | "firstmate_decision_receipt_invalid"
   | "prompt_missing"
   | "review_target_missing"
   | "parent_thread_paginated"
@@ -401,6 +409,7 @@ export async function createReviewCapsule(
       capsuleId,
       createdAt,
       workflowDecision: input.workflowDecision,
+      workflowDecisionReceipt: input.workflowDecisionReceipt,
       source: {
         taskId: input.source.taskId,
         runId: input.source.runId,
@@ -458,6 +467,15 @@ export async function createReviewCapsule(
 function validateReviewCapsuleInput(
   input: ReviewCapsuleInput,
 ): ReviewCapsuleResult | { readonly ok: true } {
+  if (
+    !isFirstmateDecisionReceipt(input.workflowDecisionReceipt)
+    || !verifyFirstmateDecisionReceipt(
+      input.workflowDecision,
+      input.workflowDecisionReceipt,
+    )
+  ) {
+    return fail("firstmate_decision_receipt_invalid");
+  }
   if (input.source.taskId.trim().length === 0) return fail("source_task_missing");
   if (input.source.runId.trim().length === 0) return fail("source_run_missing");
   if (input.source.firstmateSessionRef.trim().length === 0) {

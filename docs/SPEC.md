@@ -283,8 +283,9 @@ Firstmate 是唯一 workflow decision writer：
 - 完整 role assignments
 - stage barriers、最大回合與停止條件
 - fallback policy
+- signed execution policy，包括 Adapter exact-assignment、named-skill 行為與 debugging gate
 - source task/run lineage
-- Firstmate signature 或可驗證 decision hash
+- immutable decision artifact、Firstmate Ed25519 signature receipt 與 public-key fingerprint
 
 ### FR-13 Runtime Authority
 
@@ -306,14 +307,18 @@ Run Registry 是 execution truth 的唯一持久來源：
 3. Adapter 收到 unavailable／quota-limited 後只能回報；只有新的 Firstmate decision 可以改用 fallback。
 4. Author、Reviewer、Judge、Report Composer 的 assignment 與輸出可追溯到同一 `workflowDecisionId`。
 5. report 只接受 registry 中 completed 且 lineage 完整的 artifacts；較新的失敗 attempt 不會遮蔽既有成功 canonical run。
+6. Firstmate decision receipt 無法寫入或驗簽時，不建立 canonical run，也不呼叫 Author、Reviewer、Judge 或 Codex App Server。
+7. 原始 Standard intent 必須以明文接受 scope gate；不得用 base64、摘要或 prompt 包裝隱藏未檢查的執行要求。
 
 先前實機曾在同一 Standard 目標產生兩筆不同 run。該案例保留為 Runtime Authority 的回歸情境，而不是以「使用者不要重複按」規避。
 
 ### v0.2 實作狀態
 
-- `WorkflowDecisionEnvelope` 由 Firstmate 建立並以 canonical hash 驗證；Adapter 只能取得 exact stage assignment。
+- `WorkflowDecisionEnvelope` 由 Firstmate 建立，canonical hash 證明內容完整性；Ed25519 receipt 另證明本機 Firstmate authority store 的發行來源。
+- signed `executionPolicy` 固定 Adapter exact assignment、named-skill 行為與 debugging gate；prompt 只能 render policy，不可自行補 fallback。
 - Standard、Adversarial、Research 與 Codex Review 都寫入同一種 canonical Run Registry。
 - 同一 intent 的 active 或 completed 重送會 coalesce；不再建立第二個外部工作。
 - filesystem lease 保護跨程序 writer；event log 使用 append-only hash chain，projection 與完成 artifact 會 strict read-back。
 - Quick 作為 Firstmate 下游 primitive 接收上層 idempotency key；Context Branch 是一次性 lineage handoff，不是自主 workflow。
 - `unknown_outcome` 只有在 read-back 為 `not_found` 後才能開新 attempt；在 provider 無法證明未接受時保持 fail closed。
+- signing identity 預設位於 `<state-dir>/firstmate-authority/identity/`；若 runtime 有 `FM_HOME`，則使用 `<FM_HOME>/aicoding-mate-authority/`。私鑰權限為本機使用者 `0600`。

@@ -91,6 +91,7 @@ describe("Firstmate workflow authority contract", () => {
     const envelope = createWorkflowDecisionEnvelope(decisionInput());
     const reordered = {
       decisionHash: envelope.decisionHash,
+      executionPolicy: envelope.executionPolicy,
       fallbackPolicy: envelope.fallbackPolicy,
       stopConditions: envelope.stopConditions,
       stageBarriers: envelope.stageBarriers,
@@ -230,6 +231,11 @@ function decisionInput(
     fallbackPolicy: {
       behavior: "new_decision_required",
       reason: "Adapters only report observations; Firstmate must issue a new decision.",
+    },
+    executionPolicy: {
+      adapterBehavior: "execute_exact_assignment_only",
+      namedSkillUnavailable: "equivalent_read_only_review",
+      minimumDebuggingHypotheses: 3,
     },
     reportComposer: {
       owner: "firstmate",
