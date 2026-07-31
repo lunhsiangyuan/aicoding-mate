@@ -307,6 +307,28 @@ describe("standard runtime integration", () => {
     expect(second.record.id).toBe(first.record.id);
     expect(authorDispatches).toBe(1);
     expect(reviewDispatches).toBe(1);
+
+    const author = first.record.author;
+    if (author === null || !author.receipt.accepted) {
+      throw new Error("completed author receipt missing");
+    }
+    writeFileSync(
+      first.record.recordPath,
+      `${JSON.stringify({
+        ...first.record,
+        author: {
+          ...author,
+          receipt: {
+            ...author.receipt,
+            identity: {
+              ...author.receipt.identity,
+              decisionHash: "0".repeat(64),
+            },
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    expect(readStandardRunRecord(first.record.recordPath)).toBeUndefined();
   });
 
   test("coalesces an active duplicate before the first Firstmate receipt returns", async () => {

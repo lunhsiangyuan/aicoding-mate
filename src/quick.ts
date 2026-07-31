@@ -1097,7 +1097,8 @@ export function quickWorkflowExecutionMatches(
     && actual.exactAssignment.resolvedModel
       === expected.exactAssignment.resolvedModel
     && actual.exactAssignment.capabilityTier
-      === expected.exactAssignment.capabilityTier;
+      === expected.exactAssignment.capabilityTier
+    && actual.exactAssignment.reason === expected.exactAssignment.reason;
 }
 
 function reusableIdempotentQuickRecord(

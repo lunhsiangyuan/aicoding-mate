@@ -1872,8 +1872,8 @@ function isStandardRunRecord(
     if (
       record.routingDecision === null
       || record.workflowDecision === null
-      || !isRecordValue(record.author)
-      || !isRecordValue(record.review)
+      || !isStandardDispatchOutcome(record.author)
+      || !isStandardReviewOutcome(record.review)
       || !isDecisionReadyReportCandidate(record.report)
       || record.blockers.length !== 0
       || typeof record.authority.canonicalRunId !== "string"
@@ -1884,6 +1884,16 @@ function isStandardRunRecord(
     ) {
       return false;
     }
+    if (!completedAuthorReceiptMatches({
+      task: record.task,
+      projectDir: record.projectDir,
+      source: record.source,
+      workflowDecision: record.workflowDecision,
+      author: record.author,
+      canonicalRunId: record.authority.canonicalRunId,
+    })) {
+      return false;
+    }
     try {
       assertDecisionReadyReport(record.report);
     } catch {
@@ -1891,6 +1901,68 @@ function isStandardRunRecord(
     }
   }
   return true;
+}
+
+function isStandardDispatchOutcome(
+  value: unknown,
+): value is StandardDispatchOutcome {
+  if (
+    !isRecordValue(value)
+    || !isRecordValue(value.receipt)
+    || value.receipt.accepted !== true
+    || (
+      value.receipt.idempotencyStatus !== "accepted"
+      && value.receipt.idempotencyStatus !== "duplicate"
+    )
+    || !isRecordValue(value.receipt.identity)
+    || typeof value.receipt.identity.idempotencyKey !== "string"
+    || typeof value.receipt.identity.workflowDecisionId !== "string"
+    || typeof value.receipt.identity.decisionHash !== "string"
+    || value.receipt.identity.stageId !== "author"
+    || typeof value.receipt.identity.exactAssignmentHash !== "string"
+    || typeof value.receipt.firstmateTaskId !== "string"
+    || typeof value.receipt.workerTarget !== "string"
+    || typeof value.receipt.evidencePath !== "string"
+    || value.receipt.reason !== null
+    || typeof value.summary !== "string"
+    || typeof value.quickRecordPath !== "string"
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function completedAuthorReceiptMatches(input: {
+  readonly task: string;
+  readonly projectDir: string;
+  readonly source: SourceLineage;
+  readonly workflowDecision: WorkflowDecisionEnvelope;
+  readonly author: StandardDispatchOutcome;
+  readonly canonicalRunId: string;
+}): boolean {
+  const authorAssignment = input.workflowDecision.roleAssignments.find(
+    (assignment) => assignment.role === "author",
+  );
+  if (authorAssignment === undefined) return false;
+  return firstmateDispatchReceiptMatches(
+    {
+      idempotencyKey: workflowDispatchIdempotencyKey(
+        input.canonicalRunId,
+        input.workflowDecision.decisionHash,
+        "author",
+        null,
+      ),
+      workflow: "standard",
+      workflowDecisionId: input.workflowDecision.workflowDecisionId,
+      decisionHash: input.workflowDecision.decisionHash,
+      stageId: "author",
+      exactAssignment: authorAssignment,
+      projectDir: input.projectDir,
+      source: input.source,
+      task: architectureTask(input.task, input.workflowDecision),
+    },
+    input.author.receipt,
+  );
 }
 
 function isRecordValue(value: unknown): value is Record<string, unknown> {

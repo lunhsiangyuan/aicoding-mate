@@ -7,6 +7,7 @@ import {
   bootstrapFirstmate,
   createQuickRun,
   markRunPresented,
+  quickWorkflowExecutionMatches,
   readRunRecord,
   verifyPaneRecordConsistency,
 } from "../src/quick.ts";
@@ -163,6 +164,26 @@ describe("quick workflow", () => {
       expect(result.record.workflowExecution?.exactAssignment.resolvedModel).toBe(
         "gpt-5.6-sol",
       );
+      const workflowExecution = result.record.workflowExecution;
+      expect(workflowExecution).toBeDefined();
+      if (workflowExecution === undefined) {
+        throw new Error("workflow execution missing");
+      }
+      expect(
+        quickWorkflowExecutionMatches(
+          {
+            ...result.record,
+            workflowExecution: {
+              ...workflowExecution,
+              exactAssignment: {
+                ...workflowExecution.exactAssignment,
+                reason: "tampered assignment reason",
+              },
+            },
+          },
+          workflowExecution,
+        ),
+      ).toBe(false);
       expect(result.record.fmHome).toBe(join(stateDir, "fm-home"));
       expect(readFileSync(join(stateDir, "fm-home", "config", "backend"), "utf8")).toBe("herdr\n");
       expect(result.record.firstmateRoot).toBe(firstmateRoot);
