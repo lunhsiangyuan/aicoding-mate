@@ -312,6 +312,14 @@ export class FileRunRegistry {
       receiptPath: dispatch.receiptPath,
       accepted: dispatch.accepted,
     }, (run, attempt) => {
+      if (
+        attempt.dispatches.some(
+          (existing) =>
+            existing.idempotencyKey === dispatch.idempotencyKey,
+        )
+      ) {
+        throw new Error("dispatch_idempotency_key_already_recorded");
+      }
       const nextStatus = dispatch.accepted ? "accepted" : "dispatching";
       const nextDispatch: DispatchRecord = {
         id: `dispatch-${attempt.dispatches.length + 1}`,

@@ -1,3 +1,7 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, test } from "bun:test";
 
 import type { RoleAssignment } from "../src/contracts/index.ts";
@@ -116,9 +120,12 @@ describe("high-intensity CLI port", () => {
 
   test("executes exact role assignment through agent without rerouting", async () => {
     const calls: RunnerCall[] = [];
+    const stateDir = mkdtempSync(
+      join(tmpdir(), "aicoding-mate-high-cli-receipt-"),
+    );
     const port = createHighIntensityCliPort({
       cwd,
-      env: { PATH: "/bin" },
+      env: { PATH: "/bin", ACM_STATE_DIR: stateDir },
       runner: recordingRunner(calls, "model output"),
     });
 
@@ -155,12 +162,13 @@ describe("high-intensity CLI port", () => {
         cwd,
       },
     ]);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       rawOutput: "model output",
       alias: "openai-author",
       family: "openai",
       model: "gpt-5.6-sol-high",
     });
+    expect(result.receiptPath).toStartWith(stateDir);
   });
 
   test("fails closed on missing listed model and failed agent command", () => {

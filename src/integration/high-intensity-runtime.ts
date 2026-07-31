@@ -31,6 +31,10 @@ import {
   type RunProjection,
 } from "../runtime/run-registry.ts";
 import {
+  readModelDispatchReceipt,
+  type ModelDispatchIdentity,
+} from "../runtime/model-dispatch-receipt.ts";
+import {
   composeHighIntensityReport,
   partitionRecallFirstResearch,
   reviewCoverage,
@@ -69,6 +73,7 @@ export interface HighIntensityModelResult {
   readonly alias: string;
   readonly family: string;
   readonly model: string;
+  readonly receiptPath: string;
 }
 
 export interface HighIntensityModelPort {
@@ -88,6 +93,7 @@ export interface HighIntensityCallRecord {
   readonly workflowDecisionId: string;
   readonly decisionHash: string;
   readonly idempotencyKey: string;
+  readonly receiptPath: string;
 }
 
 export interface HighIntensityRunRecord {
@@ -644,10 +650,31 @@ async function executeModel(options: {
       registryStatus: "failed",
     };
   }
+  const receiptIdentity: ModelDispatchIdentity = {
+    idempotencyKey,
+    workflowDecisionId: options.workflowDecision.workflowDecisionId,
+    decisionHash: options.workflowDecision.decisionHash,
+    stageId: options.phase,
+    assignment: options.assignment,
+  };
+  const receiptReadback = readModelDispatchReceipt(
+    result.receiptPath,
+    receiptIdentity,
+  );
+  if (
+    receiptReadback === undefined
+    || receiptReadback.rawOutput !== result.rawOutput
+  ) {
+    return {
+      ok: false,
+      reason: `model_receipt_readback_failed:${options.phase}`,
+      registryStatus: "failed",
+    };
+  }
   options.registry.acceptDispatch(options.lease, {
     idempotencyKey,
     target: `${result.family}:${result.model}`,
-    receiptPath: null,
+    receiptPath: result.receiptPath,
     now: options.now(),
   });
   options.registry.markRunning(options.lease, { now: options.now() });
@@ -662,6 +689,7 @@ async function executeModel(options: {
     workflowDecisionId: options.workflowDecision.workflowDecisionId,
     decisionHash: options.workflowDecision.decisionHash,
     idempotencyKey,
+    receiptPath: result.receiptPath,
   });
   return { ok: true, rawOutput: result.rawOutput };
 }

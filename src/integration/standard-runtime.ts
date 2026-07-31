@@ -50,6 +50,12 @@ import {
   type RegistryLease,
   type RunProjection,
 } from "../runtime/run-registry.ts";
+import {
+  modelDispatchReceiptPath,
+  persistModelDispatchReceipt,
+  readModelDispatchReceipt,
+  type ModelDispatchIdentity,
+} from "../runtime/model-dispatch-receipt.ts";
 
 export type StandardRuntimeStatus = "blocked" | "completed";
 
@@ -58,6 +64,7 @@ export interface StandardReviewOutcome {
   readonly family: string;
   readonly model: string;
   readonly rawOutput: string;
+  readonly receiptPath: string | null;
   readonly error: string | null;
 }
 
@@ -89,6 +96,20 @@ export interface StandardRuntimePorts {
     | {
         readonly status: "found";
         readonly outcome: StandardDispatchOutcome;
+      }
+    | {
+        readonly status: "not_found" | "mismatch";
+        readonly checkedAt: string;
+        readonly reason: string;
+      }
+  >;
+  readonly readBackReview?: (
+    assignment: RoleAssignment,
+    execution: StandardReviewExecution,
+  ) => Promise<
+    | {
+        readonly status: "found";
+        readonly outcome: StandardReviewOutcome;
       }
     | {
         readonly status: "not_found" | "mismatch";
@@ -380,8 +401,39 @@ export async function createStandardRun(
     source,
     task: authorTask,
   };
+  const reviewerStage = lookupExactStageAssignment(
+    workflowDecision,
+    "reviewer",
+  );
+  const reviewerAssignment = reviewerStage.roleAssignment;
+  const reviewDispatchKey = workflowDispatchIdempotencyKey(
+    opened.run.runId,
+    workflowDecision.decisionHash,
+    "reviewer",
+    null,
+  );
+  const reviewExecution: StandardReviewExecution = {
+    workflowDecisionId: workflowDecision.workflowDecisionId,
+    decisionHash: workflowDecision.decisionHash,
+    stageId: "reviewer",
+    idempotencyKey: reviewDispatchKey,
+  };
+  const repairDispatchKey = workflowDispatchIdempotencyKey(
+    opened.run.runId,
+    workflowDecision.decisionHash,
+    "reviewer",
+    1,
+  );
+  const repairExecution: StandardReviewExecution = {
+    workflowDecisionId: workflowDecision.workflowDecisionId,
+    decisionHash: workflowDecision.decisionHash,
+    stageId: "reviewer",
+    idempotencyKey: repairDispatchKey,
+  };
   let lease: RegistryLease | null = null;
   let reconciledAuthor: StandardDispatchOutcome | null = null;
+  let reconciledReview: StandardReviewOutcome | null = null;
+  let reconciledRepair: StandardReviewOutcome | null = null;
 
   if (opened.kind !== "created") {
     const existing = readStandardRunRecord(recordPath);
@@ -472,6 +524,133 @@ export async function createStandardRun(
         dedupeStatus: "reconciliation_required",
       };
     }
+    const latestAttempt = opened.run.attempts.at(-1);
+    if (
+      latestAttempt?.dispatches.some(
+        (dispatch) => dispatch.idempotencyKey === reviewDispatchKey,
+      )
+    ) {
+      if (ports.readBackReview === undefined) {
+        registry.markUnknownOutcome(lease, {
+          reason: "independent_review_requires_readback_port",
+          readback: {
+            status: "mismatch",
+            checkedAt: now(),
+            reason: "review_readback_port_unavailable",
+          },
+          now: now(),
+        });
+        releaseLeaseIfHeld(registry, lease);
+        return {
+          ok: false,
+          record: existing ?? base,
+          dedupeStatus: "reconciliation_required",
+        };
+      }
+      const reviewReadback = await ports.readBackReview(
+        reviewerAssignment,
+        reviewExecution,
+      );
+      if (
+        reviewReadback.status !== "found"
+        || !standardReviewReceiptMatches(
+          reviewReadback.outcome,
+          reviewerAssignment,
+          reviewExecution,
+        )
+      ) {
+        registry.markUnknownOutcome(lease, {
+          reason: "independent_review_requires_reconciliation",
+          readback:
+            reviewReadback.status === "found"
+              ? {
+                  status: "mismatch",
+                  checkedAt: now(),
+                  reason: "review_receipt_identity_or_output_mismatch",
+                }
+              : reviewReadback,
+          now: now(),
+        });
+        releaseLeaseIfHeld(registry, lease);
+        return {
+          ok: false,
+          record: existing ?? base,
+          dedupeStatus: "reconciliation_required",
+        };
+      }
+      reconciledReview = reviewReadback.outcome;
+      registry.acceptDispatch(lease, {
+        idempotencyKey: reviewDispatchKey,
+        target:
+          `${reviewReadback.outcome.family}:${reviewReadback.outcome.model}`,
+        receiptPath: reviewReadback.outcome.receiptPath,
+        now: now(),
+      });
+      registry.markRunning(lease, { now: now() });
+    }
+    if (
+      latestAttempt?.dispatches.some(
+        (dispatch) => dispatch.idempotencyKey === repairDispatchKey,
+      )
+    ) {
+      if (ports.readBackReview === undefined) {
+        registry.markUnknownOutcome(lease, {
+          reason: "review_repair_requires_readback_port",
+          readback: {
+            status: "mismatch",
+            checkedAt: now(),
+            reason: "review_repair_readback_port_unavailable",
+          },
+          now: now(),
+        });
+        releaseLeaseIfHeld(registry, lease);
+        return {
+          ok: false,
+          record: existing ?? base,
+          dedupeStatus: "reconciliation_required",
+        };
+      }
+      const repairReadback = await ports.readBackReview(
+        reviewerAssignment,
+        repairExecution,
+      );
+      if (
+        repairReadback.status !== "found"
+        || !standardReviewReceiptMatches(
+          repairReadback.outcome,
+          reviewerAssignment,
+          repairExecution,
+        )
+      ) {
+        registry.markUnknownOutcome(lease, {
+          reason: "review_repair_requires_reconciliation",
+          readback:
+            repairReadback.status === "found"
+              ? {
+                  status: "mismatch",
+                  checkedAt: now(),
+                  reason: "review_repair_receipt_identity_or_output_mismatch",
+                }
+              : repairReadback,
+          now: now(),
+        });
+        releaseLeaseIfHeld(registry, lease);
+        return {
+          ok: false,
+          record: existing ?? base,
+          dedupeStatus: "reconciliation_required",
+        };
+      }
+      reconciledRepair = repairReadback.outcome;
+      registry.acceptDispatch(lease, {
+        idempotencyKey: repairDispatchKey,
+        target:
+          `${repairReadback.outcome.family}:${repairReadback.outcome.model}`,
+        receiptPath: repairReadback.outcome.receiptPath,
+        now: now(),
+      });
+      registry.markRunning(lease, { now: now() });
+    }
   } else {
     lease = opened.lease;
     writeStandardRecord(base);
@@ -529,52 +708,39 @@ export async function createStandardRun(
       registry.markRunning(lease, { now: now() });
     }
 
-    const reviewerStage = lookupExactStageAssignment(
-      workflowDecision,
-      "reviewer",
-    );
-    const reviewerAssignment = reviewerStage.roleAssignment;
-    const reviewDispatchKey = workflowDispatchIdempotencyKey(
-      opened.run.runId,
-      workflowDecision.decisionHash,
-      "reviewer",
-      null,
-    );
-    registry.recordDispatch(lease, {
-      idempotencyKey: reviewDispatchKey,
-      target: reviewerAssignment.alias,
-      receiptPath: null,
-      accepted: false,
-      now: now(),
-    });
     const reviewAttempts: StandardReviewOutcome[] = [];
-    let review: StandardReviewOutcome;
-    try {
-      review = await ports.review(
-        buildReviewPrompt(options.task, author.summary, plan.routing.decision),
-        reviewerAssignment,
-        {
-          workflowDecisionId: workflowDecision.workflowDecisionId,
-          decisionHash: workflowDecision.decisionHash,
-          stageId: "reviewer",
-          idempotencyKey: reviewDispatchKey,
-        },
-      );
-    } catch {
-      registry.markUnknownOutcome(lease, {
-        reason: "independent_review_unknown_outcome",
-        readback: {
-          status: "mismatch",
-          checkedAt: now(),
-          reason: "review_dispatch_threw_before_receipt_readback",
-        },
+    const reviewWasReconciled = reconciledReview !== null;
+    let review = reconciledReview;
+    if (review === null) {
+      registry.recordDispatch(lease, {
+        idempotencyKey: reviewDispatchKey,
+        target: reviewerAssignment.alias,
+        receiptPath: null,
+        accepted: false,
         now: now(),
       });
-      return blocked(
-        { ...base, author },
-        now,
-        "independent_review_unknown_outcome",
-      );
+      try {
+        review = await ports.review(
+          buildReviewPrompt(options.task, author.summary, plan.routing.decision),
+          reviewerAssignment,
+          reviewExecution,
+        );
+      } catch {
+        registry.markUnknownOutcome(lease, {
+          reason: "independent_review_unknown_outcome",
+          readback: {
+            status: "mismatch",
+            checkedAt: now(),
+            reason: "review_dispatch_threw_before_receipt_readback",
+          },
+          now: now(),
+        });
+        return blocked(
+          { ...base, author },
+          now,
+          "independent_review_unknown_outcome",
+        );
+      }
     }
     if (!review.ok) {
       reviewAttempts.push(review);
@@ -603,57 +769,69 @@ export async function createStandardRun(
         "review_provenance_mismatch",
       );
     }
-    registry.acceptDispatch(lease, {
-      idempotencyKey: reviewDispatchKey,
-      target: `${review.family}:${review.model}`,
-      receiptPath: null,
-      now: now(),
-    });
-    registry.markRunning(lease, { now: now() });
+    if (
+      !standardReviewReceiptMatches(
+        review,
+        reviewerAssignment,
+        reviewExecution,
+      )
+    ) {
+      reviewAttempts.push(review);
+      registry.failAttempt(lease, {
+        reason: "review_receipt_readback_failed",
+        now: now(),
+      });
+      return blocked(
+        { ...base, author, review, reviewAttempts },
+        now,
+        "review_receipt_readback_failed",
+      );
+    }
+    if (!reviewWasReconciled) {
+      registry.acceptDispatch(lease, {
+        idempotencyKey: reviewDispatchKey,
+        target: `${review.family}:${review.model}`,
+        receiptPath: review.receiptPath,
+        now: now(),
+      });
+      registry.markRunning(lease, { now: now() });
+    }
     reviewAttempts.push(review);
 
     let reviewDocument = parseReviewDocument(review.rawOutput);
     if (reviewDocument === null && plan.config.recipe.repairRounds > 0) {
-      const repairDispatchKey = workflowDispatchIdempotencyKey(
-        opened.run.runId,
-        workflowDecision.decisionHash,
-        "reviewer",
-        1,
-      );
-      registry.recordDispatch(lease, {
-        idempotencyKey: repairDispatchKey,
-        target: reviewerAssignment.alias,
-        receiptPath: null,
-        accepted: false,
-        now: now(),
-      });
-      let repairedReview: StandardReviewOutcome;
-      try {
-        repairedReview = await ports.review(
-          buildReviewRepairPrompt(review.rawOutput),
-          reviewerAssignment,
-          {
-            workflowDecisionId: workflowDecision.workflowDecisionId,
-            decisionHash: workflowDecision.decisionHash,
-            stageId: "reviewer",
-            idempotencyKey: repairDispatchKey,
-          },
-        );
-      } catch {
-        registry.markUnknownOutcome(lease, {
-          reason: "review_repair_unknown_outcome",
-          readback: {
-            status: "mismatch",
-            checkedAt: now(),
-            reason: "repair_dispatch_threw_before_receipt_readback",
-          },
+      const repairWasReconciled = reconciledRepair !== null;
+      let repairedReview = reconciledRepair;
+      if (repairedReview === null) {
+        registry.recordDispatch(lease, {
+          idempotencyKey: repairDispatchKey,
+          target: reviewerAssignment.alias,
+          receiptPath: null,
+          accepted: false,
           now: now(),
         });
-        return blocked(
-          { ...base, author, review, reviewAttempts },
-          now,
-          "review_repair_unknown_outcome",
-        );
+        try {
+          repairedReview = await ports.review(
+            buildReviewRepairPrompt(review.rawOutput),
+            reviewerAssignment,
+            repairExecution,
+          );
+        } catch {
+          registry.markUnknownOutcome(lease, {
+            reason: "review_repair_unknown_outcome",
+            readback: {
+              status: "mismatch",
+              checkedAt: now(),
+              reason: "repair_dispatch_threw_before_receipt_readback",
+            },
+            now: now(),
+          });
+          return blocked(
+            { ...base, author, review, reviewAttempts },
+            now,
+            "review_repair_unknown_outcome",
+          );
+        }
       }
       reviewAttempts.push(repairedReview);
       if (!repairedReview.ok) {
@@ -691,13 +869,37 @@ export async function createStandardRun(
           "review_repair_provenance_mismatch",
         );
       }
-      registry.acceptDispatch(lease, {
-        idempotencyKey: repairDispatchKey,
-        target: `${repairedReview.family}:${repairedReview.model}`,
-        receiptPath: null,
-        now: now(),
-      });
-      registry.markRunning(lease, { now: now() });
+      if (
+        !standardReviewReceiptMatches(
+          repairedReview,
+          reviewerAssignment,
+          repairExecution,
+        )
+      ) {
+        registry.failAttempt(lease, {
+          reason: "review_repair_receipt_readback_failed",
+          now: now(),
+        });
+        return blocked(
+          {
+            ...base,
+            author,
+            review: repairedReview,
+            reviewAttempts,
+          },
+          now,
+          "review_repair_receipt_readback_failed",
+        );
+      }
+      if (!repairWasReconciled) {
+        registry.acceptDispatch(lease, {
+          idempotencyKey: repairDispatchKey,
+          target: `${repairedReview.family}:${repairedReview.model}`,
+          receiptPath: repairedReview.receiptPath,
+          now: now(),
+        });
+        registry.markRunning(lease, { now: now() });
+      }
       review = repairedReview;
       reviewDocument = parseReviewDocument(repairedReview.rawOutput);
     }
@@ -1011,6 +1213,35 @@ export function defaultStandardRuntimePorts(options: {
         options.env,
       );
     },
+    async readBackReview(assignment, execution) {
+      const checkedAt = new Date().toISOString();
+      const receiptPath = modelDispatchReceiptPath(
+        join(resolveStateDir(options.cwd, options.env), "model-dispatches"),
+        execution.idempotencyKey,
+      );
+      const readback = readModelDispatchReceipt(
+        receiptPath,
+        standardReviewIdentity(assignment, execution),
+      );
+      if (readback === undefined) {
+        return {
+          status: "not_found",
+          checkedAt,
+          reason: "review_dispatch_receipt_not_found",
+        };
+      }
+      return {
+        status: "found",
+        outcome: {
+          ok: true,
+          family: assignment.family,
+          model: assignment.resolvedModel,
+          rawOutput: readback.rawOutput,
+          receiptPath: readback.receipt.receiptPath,
+          error: null,
+        },
+      };
+    },
   };
 }
 
@@ -1032,6 +1263,7 @@ function runIndependentReview(
     family: assignment.family,
     model: assignment.resolvedModel,
     rawOutput: "",
+    receiptPath: null,
     error: `review_adapter_family_unsupported:${assignment.family}`,
   };
 }
@@ -1077,14 +1309,31 @@ function runClaudeReview(
     },
   );
   const rawOutput = (result.stdout ?? "").trim();
+  const succeeded = result.status === 0 && rawOutput.length > 0;
+  let receiptPath: string | null = null;
+  let receiptError: string | null = null;
+  if (succeeded) {
+    try {
+      receiptPath = persistStandardReviewReceipt(
+        cwd,
+        env,
+        assignment,
+        execution,
+        rawOutput,
+      );
+    } catch {
+      receiptError = "review_receipt_persist_failed";
+    }
+  }
   return {
-    ok: result.status === 0 && rawOutput.length > 0,
+    ok: succeeded && receiptPath !== null,
     family: "anthropic",
     model,
     rawOutput,
+    receiptPath,
     error:
-      result.status === 0 && rawOutput.length > 0
-        ? null
+      succeeded
+        ? receiptError
         : compactProcessFailure(result.status, result.error, result.stderr),
   };
 }
@@ -1128,16 +1377,74 @@ function runCodexReview(
     maxBuffer: 4 * 1024 * 1024,
   });
   const rawOutput = (result.stdout ?? "").trim();
+  const succeeded = result.status === 0 && rawOutput.length > 0;
+  let receiptPath: string | null = null;
+  let receiptError: string | null = null;
+  if (succeeded) {
+    try {
+      receiptPath = persistStandardReviewReceipt(
+        cwd,
+        env,
+        assignment,
+        execution,
+        rawOutput,
+      );
+    } catch {
+      receiptError = "review_receipt_persist_failed";
+    }
+  }
   return {
-    ok: result.status === 0 && rawOutput.length > 0,
+    ok: succeeded && receiptPath !== null,
     family: "openai",
     model: assignment.resolvedModel,
     rawOutput,
+    receiptPath,
     error:
-      result.status === 0 && rawOutput.length > 0
-        ? null
+      succeeded
+        ? receiptError
         : compactProcessFailure(result.status, result.error, result.stderr),
   };
+}
+
+function persistStandardReviewReceipt(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  assignment: RoleAssignment,
+  execution: StandardReviewExecution,
+  rawOutput: string,
+): string {
+  return persistModelDispatchReceipt({
+    rootDir: join(resolveStateDir(cwd, env), "model-dispatches"),
+    identity: standardReviewIdentity(assignment, execution),
+    rawOutput,
+    completedAt: new Date().toISOString(),
+  }).receipt.receiptPath;
+}
+
+function standardReviewIdentity(
+  assignment: RoleAssignment,
+  execution: StandardReviewExecution,
+): ModelDispatchIdentity {
+  return {
+    idempotencyKey: execution.idempotencyKey,
+    workflowDecisionId: execution.workflowDecisionId,
+    decisionHash: execution.decisionHash,
+    stageId: execution.stageId,
+    assignment,
+  };
+}
+
+function standardReviewReceiptMatches(
+  outcome: StandardReviewOutcome,
+  assignment: RoleAssignment,
+  execution: StandardReviewExecution,
+): boolean {
+  if (outcome.receiptPath === null) return false;
+  const readback = readModelDispatchReceipt(
+    outcome.receiptPath,
+    standardReviewIdentity(assignment, execution),
+  );
+  return readback !== undefined && readback.rawOutput === outcome.rawOutput;
 }
 
 function buildReviewPrompt(

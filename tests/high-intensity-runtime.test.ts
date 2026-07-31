@@ -11,6 +11,7 @@ import {
   type HighIntensityModelPort,
   type HighIntensityModelRequest,
 } from "../src/integration/high-intensity-runtime.ts";
+import { persistModelDispatchReceipt } from "../src/runtime/model-dispatch-receipt.ts";
 import type { HighIntensityInput } from "../src/workflows/high-intensity.ts";
 
 const input: HighIntensityInput = {
@@ -248,7 +249,7 @@ describe("high-intensity runtime", () => {
     ]);
   });
 
-  test("empty model output fails closed as JSON invalid", async () => {
+  test("empty model output cannot form a receipt and remains an unknown outcome", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
     const result = await createHighIntensityRun({
       input,
@@ -264,7 +265,9 @@ describe("high-intensity runtime", () => {
 
     expect(result.ok).toBe(false);
     expect(result.record.status).toBe("blocked");
-    expect(result.record.blockers).toContain("research_json_invalid");
+    expect(result.record.blockers).toContain(
+      "model_execution_unknown_outcome:research",
+    );
     expect(readHighIntensityRunRecord(result.record.recordPath)?.status).toBe("blocked");
   });
 
@@ -277,10 +280,8 @@ describe("high-intensity runtime", () => {
       modelPort: {
         async execute(request) {
           return {
-            rawOutput: researchJson(),
-            alias: request.assignment.alias,
+            ...provenance(request, researchJson()),
             family: "wrong-family",
-            model: request.assignment.resolvedModel,
           };
         },
       },
@@ -404,11 +405,26 @@ function provenance(
   request: HighIntensityModelRequest,
   rawOutput: string,
 ) {
+  const readback = persistModelDispatchReceipt({
+    rootDir: mkdtempSync(
+      join(tmpdir(), "aicoding-mate-high-receipt-"),
+    ),
+    identity: {
+      idempotencyKey: request.idempotencyKey,
+      workflowDecisionId: request.workflowDecisionId,
+      decisionHash: request.decisionHash,
+      stageId: request.stageId,
+      assignment: request.assignment,
+    },
+    rawOutput,
+    completedAt: "2026-07-31T01:00:00.000Z",
+  });
   return {
     rawOutput,
     alias: request.assignment.alias,
     family: request.assignment.family,
     model: request.assignment.resolvedModel,
+    receiptPath: readback.receipt.receiptPath,
   };
 }
 

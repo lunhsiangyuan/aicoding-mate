@@ -178,6 +178,29 @@ describe("filesystem run registry", () => {
     ).toBe("running");
   });
 
+  test("rejects duplicate dispatch idempotency keys within one attempt", () => {
+    const { registry, lease } = createRun();
+    const dispatch = {
+      idempotencyKey: "dispatch-once",
+      target: "anthropic:fable",
+      receiptPath: null,
+      accepted: false,
+      now: "2026-07-30T16:00:01.000Z",
+    };
+
+    registry.recordDispatch(lease, dispatch);
+
+    expect(() =>
+      registry.recordDispatch(lease, {
+        ...dispatch,
+        now: "2026-07-30T16:00:02.000Z",
+      })
+    ).toThrow("dispatch_idempotency_key_already_recorded");
+    expect(
+      registry.readRun(lease.runId)?.attempts.at(-1)?.dispatches,
+    ).toHaveLength(1);
+  });
+
   test("unknown outcomes only create a retry attempt after not_found read-back", () => {
     const { registry, run, lease } = createRun();
     registry.markRunning(lease, { now: "2026-07-30T16:00:02.000Z" });

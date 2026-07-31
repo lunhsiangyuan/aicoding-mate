@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { join, resolve } from "node:path";
 
 import type {
   AvailabilityCandidate,
@@ -9,6 +10,7 @@ import type {
   HighIntensityModelRequest,
   HighIntensityModelResult,
 } from "./high-intensity-runtime.ts";
+import { persistModelDispatchReceipt } from "../runtime/model-dispatch-receipt.ts";
 
 export interface HighIntensityCliRunnerResult {
   readonly status: number | null;
@@ -126,11 +128,24 @@ export function createHighIntensityCliPort(
       if (!rawOutput) {
         throw new Error("agent_empty_output");
       }
+      const receiptPath = persistModelDispatchReceipt({
+        rootDir: join(resolveStateDir(options.cwd, env), "model-dispatches"),
+        identity: {
+          idempotencyKey: request.idempotencyKey,
+          workflowDecisionId: request.workflowDecisionId,
+          decisionHash: request.decisionHash,
+          stageId: request.stageId,
+          assignment: request.assignment,
+        },
+        rawOutput,
+        completedAt: (options.now ?? (() => new Date().toISOString()))(),
+      }).receipt.receiptPath;
       return {
         rawOutput,
         alias: request.assignment.alias,
         family: request.assignment.family,
         model: request.assignment.resolvedModel,
+        receiptPath,
       };
     },
   };
@@ -203,4 +218,8 @@ function defaultRunner(
 
 function compactTimestamp(value: string): string {
   return value.replace(/[^0-9]/g, "").slice(0, 14);
+}
+
+function resolveStateDir(cwd: string, env: NodeJS.ProcessEnv): string {
+  return resolve(env.ACM_STATE_DIR ?? join(cwd, "state", "aicoding-mate"));
 }
