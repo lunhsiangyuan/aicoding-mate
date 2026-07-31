@@ -216,6 +216,31 @@ describe("Codex app-server review runtime", () => {
     }
   });
 
+  test("does not misclassify a negative approval phrase as approved", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-codex-negative-"));
+    const logPath = join(root, "requests.jsonl");
+    const script = fakeAppServer(root, "not-approved", logPath);
+    const port = createCodexAppServerReviewPort({
+      command: process.execPath,
+      args: [script],
+      cwd: root,
+      timeoutMs: 1_000,
+      now: () => "2026-07-30T20:01:00.000Z",
+    });
+
+    try {
+      const start = await port.startReview(request);
+      const readBack = await port.readReviewThread(start.reviewThreadId);
+
+      expect(readBack.ok).toBe(true);
+      if (!readBack.ok) throw new Error(readBack.reason);
+      expect(readBack.rawReviewText).toContain("not approved");
+      expect(readBack.decision).toBe("changes_requested");
+    } finally {
+      await port.dispose();
+    }
+  });
+
   test("restores a persisted review session and reads the existing thread without review/start", async () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-codex-restore-"));
     const logPath = join(root, "requests.jsonl");
@@ -489,6 +514,7 @@ function fakeAppServer(
     | "top-level-turn-id-only"
     | "wrong-turn"
     | "assistant-only"
+    | "not-approved"
     | "configured",
   logPath: string,
 ): string {
@@ -550,7 +576,8 @@ function fakeAppServer(
       "    const reviewThreadId = mode === 'bad-review-id' ? 'thread/review?bad' : 'thread-review-1';",
       "    send({ jsonrpc: '2.0', id: message.id, result: { reviewThreadId, turn: { id: 'turn-review-1' } } });",
       "    if (mode === 'no-completion' || mode === 'bad-review-id') return;",
-      "    const item = mode === 'assistant-only' ? { id: 'item-review', type: 'assistant_message', text: 'approved' } : { id: 'item-review', type: 'exitedReviewMode', review: 'src/review/index.ts:12 changes requested\\nBad id handling should fail closed.' };",
+      "    const reviewText = mode === 'not-approved' ? 'src/review/index.ts:12 not approved\\nThe change still needs correction.' : 'src/review/index.ts:12 changes requested\\nBad id handling should fail closed.';",
+      "    const item = mode === 'assistant-only' ? { id: 'item-review', type: 'assistant_message', text: 'approved' } : { id: 'item-review', type: 'exitedReviewMode', review: reviewText };",
       "    send({ jsonrpc: '2.0', method: 'item/completed', params: { completedAtMs: 1785441670000, threadId: reviewThreadId, turnId: 'turn-review-1', item } });",
       "    const completedTurnId = mode === 'wrong-turn' ? 'turn-other' : 'turn-review-1';",
       "    send({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: reviewThreadId, turn: { id: completedTurnId, status: 'completed', items: [], completedAt: 1785441670 } } });",
@@ -558,7 +585,8 @@ function fakeAppServer(
       "  }",
       "  if (message.method === 'thread/read') {",
       "    if (!expectParamKeys(message, 'includeTurns,threadId')) return;",
-      "    const readItem = mode === 'assistant-only' ? { id: 'item-review-read', type: 'assistant_message', text: 'approved' } : { id: 'item-review-read', type: 'exitedReviewMode', review: 'src/review/index.ts:12 changes requested\\nBad id handling should fail closed.' };",
+      "    const reviewText = mode === 'not-approved' ? 'src/review/index.ts:12 not approved\\nThe change still needs correction.' : 'src/review/index.ts:12 changes requested\\nBad id handling should fail closed.';",
+      "    const readItem = mode === 'assistant-only' ? { id: 'item-review-read', type: 'assistant_message', text: 'approved' } : { id: 'item-review-read', type: 'exitedReviewMode', review: reviewText };",
       "    send({ jsonrpc: '2.0', id: message.id, result: { thread: { id: message.params.threadId, turns: [{ id: 'turn-review-1', status: 'completed', items: [readItem] }] } } });",
       "  }",
       "});",

@@ -406,14 +406,38 @@ describe("Codex review command bridge", () => {
     let factoryCalls = 0;
     let reviewStarts = 0;
     let restores = 0;
-    let restoredRequest: CodexReviewStartRequest | null = null;
+    let availabilityObservations = 0;
+    const firstStartedRequests: CodexReviewStartRequest[] = [];
+    const restoredRequests: CodexReviewStartRequest[] = [];
     const ports = {
+      observeAvailability() {
+        availabilityObservations += 1;
+        return {
+          id: `native-review-drift-${availabilityObservations}`,
+          capturedAt:
+            availabilityObservations === 1
+              ? "2026-07-30T21:00:00.000Z"
+              : "2026-07-30T21:01:00.000Z",
+          candidates: [
+            {
+              alias: "codex-app-server",
+              provider: "openai" as const,
+              family: "openai" as const,
+              resolvedModel: "firstmate-policy-resolved",
+              capabilityTier: "architecture" as const,
+              state: "available" as const,
+              reason: null,
+            },
+          ],
+        };
+      },
       createAppServerReviewPort(options: CodexAppServerRuntimeOptions) {
         factoryCalls += 1;
         if (factoryCalls === 1) {
           return {
             async startReview(request: CodexReviewStartRequest) {
               reviewStarts += 1;
+              firstStartedRequests.push(request);
               const receipt = {
                 sourceThreadId: "thread-source-1",
                 reviewThreadId: "thread-review-1",
@@ -444,11 +468,14 @@ describe("Codex review command bridge", () => {
             receipt: CodexReviewStartReceipt,
           ) {
             restores += 1;
-            restoredRequest = request;
+            restoredRequests.push(request);
             restoredReceipt = receipt;
           },
           async readReviewThread(reviewThreadId: string) {
-            const request = requireValue(restoredRequest, "restoredRequest");
+            const request = requireValue(
+              restoredRequests.at(-1) ?? null,
+              "restoredRequest",
+            );
             const receipt = requireValue(restoredReceipt, "restoredReceipt");
             return {
               ok: true as const,
@@ -494,6 +521,15 @@ describe("Codex review command bridge", () => {
     expect(factoryCalls).toBe(2);
     expect(reviewStarts).toBe(1);
     expect(restores).toBe(1);
+    expect(restoredRequests.at(-1)?.workflowDecisionId).toBe(
+      firstStartedRequests.at(-1)?.workflowDecisionId,
+    );
+    expect(restoredRequests.at(-1)?.decisionHash).toBe(
+      firstStartedRequests.at(-1)?.decisionHash,
+    );
+    expect(restoredRequests.at(-1)?.idempotencyKey).toBe(
+      firstStartedRequests.at(-1)?.idempotencyKey,
+    );
   });
 
   test("coalesces the same completed selection without starting another Codex review", async () => {

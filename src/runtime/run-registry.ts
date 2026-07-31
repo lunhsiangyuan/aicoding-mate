@@ -150,6 +150,12 @@ interface LeaseFile {
   readonly expiresAt: string;
 }
 
+interface LineageFile {
+  readonly events: readonly StoredLineageEvent[];
+  readonly completeContents: string;
+  readonly truncatedTail: string | null;
+}
+
 export interface RunRegistryOptions {
   readonly rootDir: string;
 }
@@ -292,8 +298,12 @@ export class FileRunRegistry {
     }
     const run = parseRunProjection(readJson(path));
     assertRunProjectionIntegrity(runId, run);
-    assertLineageIntegrity(run, this.#eventsPath(runId));
-    return run;
+    try {
+      assertLineageIntegrity(run, this.#eventsPath(runId));
+      return run;
+    } catch (error) {
+      return this.#recoverReadableRun(run, error);
+    }
   }
 
   acquireRunLease(input: {
@@ -522,6 +532,7 @@ export class FileRunRegistry {
     return this.#mutate(lease, input.now, "attempt_unknown_outcome", {
       reason: input.reason,
       readbackStatus: input.readback.status,
+      readback: input.readback,
     }, (run, attempt) => {
       const nextRunStatus = run.completedArtifact === null
         ? "unknown_outcome"
@@ -763,6 +774,36 @@ export class FileRunRegistry {
     return true;
   }
 
+  #recoverReadableRun(run: RunProjection, cause: unknown): RunProjection {
+    const eventsPath = this.#eventsPath(run.runId);
+    const lineage = readLineageFile(eventsPath);
+    if (lineage.truncatedTail !== null) {
+      if (lineage.events.length !== run.lineage.eventCount) {
+        throw cause;
+      }
+      assertLineageEventsIntegrity(run, lineage.events);
+      writeFileSync(eventsPath, lineage.completeContents, "utf8");
+      assertLineageIntegrity(run, eventsPath);
+      return run;
+    }
+    if (lineage.events.length !== run.lineage.eventCount + 1) {
+      throw cause;
+    }
+    const prefix = lineage.events.slice(0, run.lineage.eventCount);
+    assertLineageEventsIntegrity(run, prefix);
+    const tail = lineage.events[lineage.events.length - 1];
+    if (tail === undefined) {
+      throw cause;
+    }
+    assertTailEventFollowsProjection(run, tail);
+    const recovered = replayTailEvent(run, tail);
+    if (recovered === null) {
+      throw cause;
+    }
+    this.#writeProjection(recovered);
+    return recovered;
+  }
+
   #runDir(runId: string): string {
     return join(this.#rootDir, "runs", runId);
   }
@@ -822,16 +863,51 @@ function readLastLineageEvent(path: string): StoredLineageEvent {
 }
 
 function readLineageEvents(path: string): readonly StoredLineageEvent[] {
+  const lineage = readLineageFile(path);
+  if (lineage.truncatedTail !== null) {
+    throw new Error("lineage_event_json_invalid");
+  }
+  return lineage.events;
+}
+
+function readLineageFile(path: string): LineageFile {
   if (!existsSync(path)) {
     throw new Error("lineage_missing");
   }
-  const contents = readFileSync(path, "utf8").trim();
-  if (contents.length === 0) {
+  const contents = readFileSync(path, "utf8");
+  if (contents.trim().length === 0) {
     throw new Error("lineage_empty");
   }
-  return contents
-    .split("\n")
-    .map((line) => parseLineageEvent(JSON.parse(line) as unknown));
+  const hasFinalNewline = contents.endsWith("\n");
+  const rawLines = hasFinalNewline
+    ? contents.slice(0, -1).split("\n")
+    : contents.split("\n");
+  const events: StoredLineageEvent[] = [];
+  for (const [index, line] of rawLines.entries()) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line) as unknown;
+    } catch (error) {
+      const isLastLine = index === rawLines.length - 1;
+      if (!hasFinalNewline && isLastLine) {
+        const completeLines = rawLines.slice(0, -1);
+        return {
+          events,
+          completeContents: completeLines.length === 0
+            ? ""
+            : `${completeLines.join("\n")}\n`,
+          truncatedTail: line,
+        };
+      }
+      throw error;
+    }
+    events.push(parseLineageEvent(parsed));
+  }
+  return {
+    events,
+    completeContents: hasFinalNewline ? contents : `${contents}\n`,
+    truncatedTail: null,
+  };
 }
 
 function assertRunProjectionIntegrity(
@@ -890,6 +966,13 @@ function assertLineageIntegrity(
   eventsPath: string,
 ): void {
   const events = readLineageEvents(eventsPath);
+  assertLineageEventsIntegrity(run, events);
+}
+
+function assertLineageEventsIntegrity(
+  run: RunProjection,
+  events: readonly StoredLineageEvent[],
+): void {
   if (events.length !== run.lineage.eventCount) {
     throw new Error("lineage_event_count_mismatch");
   }
@@ -923,6 +1006,240 @@ function assertLineageIntegrity(
   if (run.lineage.headHash !== previousHash) {
     throw new Error("lineage_head_hash_mismatch");
   }
+}
+
+function assertTailEventFollowsProjection(
+  run: RunProjection,
+  event: StoredLineageEvent,
+): void {
+  if (
+    event.sequence !== run.lineage.eventCount + 1 ||
+    event.runId !== run.runId ||
+    event.prevHash !== run.lineage.headHash
+  ) {
+    throw new Error("lineage_tail_mismatch");
+  }
+  const expectedHash = makeEvent({
+    sequence: event.sequence,
+    runId: event.runId,
+    attemptId: event.attemptId,
+    type: event.type,
+    at: event.at,
+    prevHash: event.prevHash,
+    payload: event.payload,
+  }).hash;
+  if (event.hash !== expectedHash) {
+    throw new Error("lineage_event_hash_mismatch");
+  }
+}
+
+function replayTailEvent(
+  run: RunProjection,
+  event: StoredLineageEvent,
+): RunProjection | null {
+  const activeAttempt = run.attempts[run.attempts.length - 1];
+  if (activeAttempt === undefined) {
+    throw new Error("run_attempt_missing");
+  }
+  let replayed: RunProjection | null = null;
+  if (event.type === "dispatch_recorded") {
+    const idempotencyKey = readPayloadString(event.payload, "idempotencyKey");
+    if (
+      activeAttempt.dispatches.some(
+        (dispatch) => dispatch.idempotencyKey === idempotencyKey,
+      )
+    ) {
+      throw new Error("dispatch_idempotency_key_already_recorded");
+    }
+    const accepted = readPayloadBoolean(event.payload, "accepted");
+    const nextStatus = accepted ? "accepted" : "dispatching";
+    const nextDispatch: DispatchRecord = {
+      id: `dispatch-${activeAttempt.dispatches.length + 1}`,
+      idempotencyKey,
+      dispatchedAt: event.at,
+      status: nextStatus,
+      target: readPayloadNullableString(event.payload, "target"),
+      receiptPath: readPayloadNullableString(event.payload, "receiptPath"),
+    };
+    replayed = updateAttempt(run, {
+      ...activeAttempt,
+      status: nextStatus,
+      updatedAt: event.at,
+      dispatches: [...activeAttempt.dispatches, nextDispatch],
+    }, nextStatus, event.at);
+  } else if (event.type === "dispatch_accepted") {
+    const idempotencyKey = readPayloadString(event.payload, "idempotencyKey");
+    let matchingIndex = -1;
+    for (
+      let index = activeAttempt.dispatches.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      if (activeAttempt.dispatches[index]?.idempotencyKey === idempotencyKey) {
+        matchingIndex = index;
+        break;
+      }
+    }
+    if (matchingIndex < 0) {
+      throw new Error("dispatch_not_recorded");
+    }
+    const dispatches = activeAttempt.dispatches.map((dispatch, index) =>
+      index === matchingIndex
+        ? {
+            ...dispatch,
+            status: "accepted" as const,
+            target: readPayloadNullableString(event.payload, "target"),
+            receiptPath: readPayloadNullableString(event.payload, "receiptPath"),
+          }
+        : dispatch
+    );
+    replayed = updateAttempt(run, {
+      ...activeAttempt,
+      status: "accepted",
+      updatedAt: event.at,
+      dispatches,
+    }, "accepted", event.at);
+  } else if (event.type === "attempt_running") {
+    replayed = updateAttempt(run, {
+      ...activeAttempt,
+      status: "running",
+      updatedAt: event.at,
+    }, "running", event.at);
+  } else if (event.type === "attempt_completed") {
+    if (event.attemptId !== activeAttempt.id) {
+      throw new Error("lineage_attempt_mismatch");
+    }
+    const artifact: CompletedArtifact = {
+      path: readPayloadString(event.payload, "artifactPath"),
+      hash: readPayloadString(event.payload, "artifactHash"),
+      completedAt: event.at,
+      attemptId: activeAttempt.id,
+    };
+    const completedAttempt: AttemptRecord = {
+      ...activeAttempt,
+      status: "completed",
+      updatedAt: event.at,
+      readback: {
+        status: "found",
+        runId: run.runId,
+        attemptId: activeAttempt.id,
+        artifactPath: artifact.path,
+        artifactHash: artifact.hash,
+      },
+      artifact,
+      failureReason: null,
+    };
+    const updated = updateAttempt(run, completedAttempt, "completed", event.at);
+    replayed = {
+      ...updated,
+      completedArtifact: run.completedArtifact ?? artifact,
+    };
+  } else if (event.type === "attempt_failed") {
+    if (run.completedArtifact !== null) {
+      replayed = {
+        ...run,
+        status: "completed",
+        updatedAt: event.at,
+      };
+    } else {
+      replayed = updateAttempt(run, {
+        ...activeAttempt,
+        status: "failed",
+        updatedAt: event.at,
+        failureReason: readPayloadString(event.payload, "reason"),
+      }, "failed", event.at);
+    }
+  } else if (event.type === "attempt_unknown_outcome") {
+    const readback = readPayloadReadbackObservation(event.payload, "readback");
+    const nextRunStatus = run.completedArtifact === null
+      ? "unknown_outcome"
+      : "completed";
+    replayed = updateAttempt(run, {
+      ...activeAttempt,
+      status: "unknown_outcome",
+      updatedAt: event.at,
+      readback,
+      failureReason: readPayloadString(event.payload, "reason"),
+    }, nextRunStatus, event.at);
+  } else if (event.type === "retry_attempt_created") {
+    if (run.completedArtifact !== null) {
+      throw new Error("completed_run_cannot_retry");
+    }
+    if (run.status !== "unknown_outcome") {
+      throw new Error("retry_requires_unknown_outcome");
+    }
+    if (readPayloadString(event.payload, "readbackStatus") !== "not_found") {
+      throw new Error("retry_requires_readback_not_found");
+    }
+    const nextSequence = run.attempts.length + 1;
+    const retryAttempt: AttemptRecord = {
+      id: `attempt-${nextSequence}`,
+      sequence: nextSequence,
+      status: "pending",
+      createdAt: event.at,
+      updatedAt: event.at,
+      dispatches: [],
+      readback: null,
+      artifact: null,
+      failureReason: null,
+    };
+    replayed = {
+      ...run,
+      status: "pending",
+      updatedAt: event.at,
+      attempts: [...run.attempts, retryAttempt],
+    };
+  }
+  if (replayed === null) {
+    return null;
+  }
+  return {
+    ...replayed,
+    lineage: {
+      eventCount: event.sequence,
+      headHash: event.hash,
+    },
+  };
+}
+
+function readPayloadString(
+  payload: { readonly [key: string]: JsonValue },
+  key: string,
+): string {
+  const value = payload[key];
+  if (typeof value !== "string") {
+    throw new Error(`invalid_event_payload:${key}`);
+  }
+  return value;
+}
+
+function readPayloadNullableString(
+  payload: { readonly [key: string]: JsonValue },
+  key: string,
+): string | null {
+  const value = payload[key];
+  if (value === null || typeof value === "string") {
+    return value;
+  }
+  throw new Error(`invalid_event_payload:${key}`);
+}
+
+function readPayloadBoolean(
+  payload: { readonly [key: string]: JsonValue },
+  key: string,
+): boolean {
+  const value = payload[key];
+  if (typeof value !== "boolean") {
+    throw new Error(`invalid_event_payload:${key}`);
+  }
+  return value;
+}
+
+function readPayloadReadbackObservation(
+  payload: { readonly [key: string]: JsonValue },
+  key: string,
+): ReadbackObservation {
+  return parseReadbackObservation(payload[key]);
 }
 
 function runIdFromFingerprint(fingerprint: string): string {

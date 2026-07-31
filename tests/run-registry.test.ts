@@ -421,6 +421,213 @@ describe("filesystem run registry", () => {
     expect(running.lineage.headHash).toBe(fourthHash);
   });
 
+  test("read-back recovers a projection when exactly one tail event is ahead", () => {
+    const { root, registry, run, lease } = createRun();
+    const projectionPath = join(root, "runs", run.runId, "projection.json");
+    const staleProjection = readFileSync(projectionPath, "utf8");
+    const running = registry.markRunning(lease, {
+      now: "2026-07-30T16:01:00.000Z",
+    });
+    writeFileSync(projectionPath, staleProjection, "utf8");
+
+    const recovered = registry.readRun(run.runId);
+
+    expect(recovered?.status).toBe("running");
+    expect(recovered?.lineage).toEqual(running.lineage);
+    const persisted = JSON.parse(
+      readFileSync(projectionPath, "utf8"),
+    ) as RunProjection;
+    expect(persisted.status).toBe("running");
+    expect(persisted.lineage).toEqual(running.lineage);
+  });
+
+  test("read-back recovers every current mutation event type when one tail event is ahead", () => {
+    {
+      const { root, registry, run, lease } = createRun();
+      const projectionPath = join(root, "runs", run.runId, "projection.json");
+      const staleProjection = readFileSync(projectionPath, "utf8");
+      const expected = registry.recordDispatch(lease, {
+        idempotencyKey: "dispatch-tail",
+        target: null,
+        receiptPath: null,
+        accepted: false,
+        now: "2026-07-30T16:01:00.000Z",
+      });
+      writeFileSync(projectionPath, staleProjection, "utf8");
+
+      expect(registry.readRun(run.runId)?.lineage).toEqual(expected.lineage);
+    }
+    {
+      const { root, registry, run, lease } = createRun();
+      registry.recordDispatch(lease, {
+        idempotencyKey: "dispatch-tail",
+        target: null,
+        receiptPath: null,
+        accepted: false,
+        now: "2026-07-30T16:01:00.000Z",
+      });
+      const projectionPath = join(root, "runs", run.runId, "projection.json");
+      const staleProjection = readFileSync(projectionPath, "utf8");
+      const expected = registry.acceptDispatch(lease, {
+        idempotencyKey: "dispatch-tail",
+        target: "session:pane",
+        receiptPath: "/tmp/receipt.json",
+        now: "2026-07-30T16:01:30.000Z",
+      });
+      writeFileSync(projectionPath, staleProjection, "utf8");
+
+      expect(registry.readRun(run.runId)?.lineage).toEqual(expected.lineage);
+    }
+    {
+      const { root, registry, run, lease } = createRun();
+      const projectionPath = join(root, "runs", run.runId, "projection.json");
+      const staleProjection = readFileSync(projectionPath, "utf8");
+      const expected = registry.markRunning(lease, {
+        now: "2026-07-30T16:01:00.000Z",
+      });
+      writeFileSync(projectionPath, staleProjection, "utf8");
+
+      expect(registry.readRun(run.runId)?.lineage).toEqual(expected.lineage);
+    }
+    {
+      const { root, registry, run, lease } = createRun();
+      const projectionPath = join(root, "runs", run.runId, "projection.json");
+      const staleProjection = readFileSync(projectionPath, "utf8");
+      const expected = registry.completeAttempt(lease, {
+        readback: foundReadback(run),
+        now: "2026-07-30T16:01:00.000Z",
+      });
+      writeFileSync(projectionPath, staleProjection, "utf8");
+
+      expect(registry.readRun(run.runId)?.lineage).toEqual(expected.lineage);
+    }
+    {
+      const { root, registry, run, lease } = createRun();
+      const projectionPath = join(root, "runs", run.runId, "projection.json");
+      const staleProjection = readFileSync(projectionPath, "utf8");
+      const expected = registry.failAttempt(lease, {
+        reason: "tail_failure",
+        now: "2026-07-30T16:01:00.000Z",
+      });
+      writeFileSync(projectionPath, staleProjection, "utf8");
+
+      expect(registry.readRun(run.runId)?.lineage).toEqual(expected.lineage);
+    }
+    {
+      const { root, registry, run, lease } = createRun();
+      const projectionPath = join(root, "runs", run.runId, "projection.json");
+      const staleProjection = readFileSync(projectionPath, "utf8");
+      const readback: ReadbackObservation = {
+        status: "mismatch",
+        checkedAt: "2026-07-30T16:01:00.000Z",
+        reason: "manual_mismatch",
+      };
+      const expected = registry.markUnknownOutcome(lease, {
+        reason: "tail_unknown",
+        readback,
+        now: "2026-07-30T16:01:00.000Z",
+      });
+      writeFileSync(projectionPath, staleProjection, "utf8");
+
+      const recovered = registry.readRun(run.runId);
+      expect(recovered?.lineage).toEqual(expected.lineage);
+      expect(recovered?.attempts.at(-1)?.readback).toEqual(readback);
+    }
+    {
+      const { root, registry, run, lease } = createRun();
+      registry.markUnknownOutcome(lease, {
+        reason: "first_unknown",
+        readback: {
+          status: "not_found",
+          checkedAt: "2026-07-30T16:01:00.000Z",
+          reason: "firstmate_task_not_found",
+        },
+        now: "2026-07-30T16:01:00.000Z",
+      });
+      const projectionPath = join(root, "runs", run.runId, "projection.json");
+      const staleProjection = readFileSync(projectionPath, "utf8");
+      const expected = registry.requestRetryAfterReadbackNotFound(lease, {
+        readback: {
+          status: "not_found",
+          checkedAt: "2026-07-30T16:02:00.000Z",
+          reason: "firstmate_task_not_found",
+        },
+        now: "2026-07-30T16:02:00.000Z",
+      });
+      writeFileSync(projectionPath, staleProjection, "utf8");
+
+      expect(registry.readRun(run.runId)?.lineage).toEqual(expected.lineage);
+    }
+  });
+
+  test("read-back truncates only a final incomplete lineage JSON line", () => {
+    const { root, registry, run } = createRun();
+    const eventsPath = join(root, "runs", run.runId, "events.jsonl");
+    const originalEvents = readFileSync(eventsPath, "utf8");
+    writeFileSync(
+      eventsPath,
+      `${originalEvents}{"schemaVersion":1`,
+      "utf8",
+    );
+
+    const recovered = registry.readRun(run.runId);
+
+    expect(recovered?.runId).toBe(run.runId);
+    expect(readFileSync(eventsPath, "utf8")).toBe(originalEvents);
+  });
+
+  test("read-back does not truncate a final complete but invalid lineage JSON event", () => {
+    const { root, registry, run } = createRun();
+    const eventsPath = join(root, "runs", run.runId, "events.jsonl");
+    const originalEvents = readFileSync(eventsPath, "utf8");
+    const invalidTail = `${originalEvents}{"schemaVersion":1}`;
+    writeFileSync(eventsPath, invalidTail, "utf8");
+
+    expect(() => registry.readRun(run.runId)).toThrow(
+      "invalid_number:sequence",
+    );
+    expect(readFileSync(eventsPath, "utf8")).toBe(invalidTail);
+  });
+
+  test("read-back rejects multiple tail events beyond the projection", () => {
+    const { root, registry, run, lease } = createRun();
+    const projectionPath = join(root, "runs", run.runId, "projection.json");
+    const staleProjection = readFileSync(projectionPath, "utf8");
+    registry.markRunning(lease, { now: "2026-07-30T16:01:00.000Z" });
+    registry.failAttempt(lease, {
+      reason: "second_event_after_projection",
+      now: "2026-07-30T16:01:01.000Z",
+    });
+    writeFileSync(projectionPath, staleProjection, "utf8");
+
+    expect(() => registry.readRun(run.runId)).toThrow(
+      "lineage_event_count_mismatch",
+    );
+  });
+
+  test("read-back rejects a tampered single tail event beyond the projection", () => {
+    const { root, registry, run, lease } = createRun();
+    const projectionPath = join(root, "runs", run.runId, "projection.json");
+    const eventsPath = join(root, "runs", run.runId, "events.jsonl");
+    const staleProjection = readFileSync(projectionPath, "utf8");
+    registry.markRunning(lease, { now: "2026-07-30T16:01:00.000Z" });
+    const lines = readFileSync(eventsPath, "utf8").trim().split("\n");
+    const tail = JSON.parse(lines[lines.length - 1] ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    lines[lines.length - 1] = JSON.stringify({
+      ...tail,
+      type: "attempt_failed",
+    });
+    writeFileSync(eventsPath, `${lines.join("\n")}\n`, "utf8");
+    writeFileSync(projectionPath, staleProjection, "utf8");
+
+    expect(() => registry.readRun(run.runId)).toThrow(
+      "lineage_event_hash_mismatch",
+    );
+  });
+
   test("read-back rejects a projection whose canonical intent was tampered", () => {
     const { root, registry, run } = createRun();
     const projectionPath = join(root, "runs", run.runId, "projection.json");

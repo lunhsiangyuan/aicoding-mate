@@ -336,6 +336,68 @@ describe("high-intensity runtime", () => {
     );
   });
 
+  test("reconciles an unknown model outcome with the original decision after availability changes", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
+    const driftedAvailability: AvailabilitySnapshot = {
+      ...availability,
+      id: "availability-high-runtime-2",
+      capturedAt: "2026-07-31T01:01:00.000Z",
+    };
+    const requests: HighIntensityModelRequest[] = [];
+    const basePort = scriptedPort(requests);
+    let lostResearchResult: Awaited<ReturnType<typeof basePort.execute>> | null =
+      null;
+    const readBackDecisionHashes: string[] = [];
+    const port: HighIntensityModelPort = {
+      async execute(request) {
+        const result = await basePort.execute(request);
+        if (request.phase === "research" && lostResearchResult === null) {
+          lostResearchResult = result;
+          throw new Error("response_lost_after_receipt_persisted");
+        }
+        return result;
+      },
+      async readBack(request) {
+        readBackDecisionHashes.push(request.decisionHash);
+        if (request.phase === "research" && lostResearchResult !== null) {
+          return { status: "found", result: lostResearchResult };
+        }
+        return readBackNotFound();
+      },
+    };
+
+    const interrupted = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      source,
+      modelPort: port,
+      now: () => "2026-07-31T01:00:00.000Z",
+    });
+    const recovered = await createHighIntensityRun({
+      input,
+      availability: driftedAvailability,
+      stateDir,
+      source,
+      modelPort: port,
+      now: () => "2026-07-31T01:01:00.000Z",
+    });
+
+    expect(interrupted.ok).toBe(false);
+    expect(recovered.ok).toBe(true);
+    expect(recovered.dedupeStatus).toBe("reconciled");
+    expect(requests.filter((request) => request.phase === "research")).toHaveLength(
+      1,
+    );
+    expect(recovered.record.workflowDecision?.workflowDecisionId).toBe(
+      interrupted.record.workflowDecision?.workflowDecisionId,
+    );
+    expect(recovered.record.availability.id).toBe(availability.id);
+    expect(readBackDecisionHashes.at(-1)).toBe(
+      interrupted.record.workflowDecision?.decisionHash,
+    );
+  });
+
   test("creates a retry attempt only after a later stage read-back proves not found", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
     const requests: HighIntensityModelRequest[] = [];

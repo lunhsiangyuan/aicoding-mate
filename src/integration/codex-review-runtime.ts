@@ -704,7 +704,16 @@ function decisionFromReviewText(reviewText: string): ReviewDecision | null {
     return "changes_requested";
   }
   if (lower.includes("blocked")) return "blocked";
-  if (lower.includes("approved") || lower.includes("lgtm")) return "approved";
+  if (
+    /\b(?:not|isn't|is not|cannot|can't|do not|don't)\s+(?:yet\s+)?approved\b/
+      .test(lower)
+    || /\b(?:not|isn't|is not)\s+lgtm\b/.test(lower)
+  ) {
+    return "changes_requested";
+  }
+  if (/\bapproved\b/.test(lower) || /\blgtm\b/.test(lower)) {
+    return "approved";
+  }
   if (lower.includes("informational")) return "informational";
   return null;
 }

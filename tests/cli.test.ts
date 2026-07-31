@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { main } from "../src/cli.ts";
 
 class BufferIO {
@@ -107,5 +110,64 @@ describe("cli", () => {
 
     expect(code).toBe(2);
     expect(buffer.stderr).toContain("需要任務文字");
+  });
+
+  test("high-intensity final read-back trusts FM_HOME authority root", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-cli-fm-home-"));
+    const binDir = join(root, "bin");
+    const stateDir = join(root, "state");
+    const fmHome = join(root, "fm-home");
+    mkdirSync(binDir);
+    const agentPath = join(binDir, "agent");
+    writeFileSync(
+      agentPath,
+      [
+        "#!/bin/zsh",
+        "if [ \"$1\" = \"--list-models\" ]; then",
+        "  printf '%s\\n' gpt-5.4-mini gpt-5.6-sol-high claude-fable-5-thinking-high cursor-grok-4.5-high",
+        "  exit 0",
+        "fi",
+        "prompt=\"${@: -1}\"",
+        "case \"$prompt\" in",
+        "  *'\"observations\"'*)",
+        "    printf '%s\\n' '{\"observations\":[{\"id\":\"obs-1\",\"subquestion\":\"哪些需求與限制已被確認？\",\"statement\":\"FM_HOME authority root must be trusted by CLI read-back.\",\"category\":\"confirmed\",\"sourceIds\":[\"src/cli.ts\"],\"lineage\":[\"cli\"],\"counterexample\":false,\"limitation\":null}]}'",
+        "    ;;",
+        "  *'\"claim\"'*)",
+        "    printf '%s\\n' '{\"claim\":\"CLI final read-back should use FM_HOME authority root.\"}'",
+        "    ;;",
+        "  *'\"counterexample\"'*)",
+        "    printf '%s\\n' '{\"counterexample\":\"A stateDir-derived authority root rejects the completed record.\"}'",
+        "    ;;",
+        "  *'\"accepted\"'*)",
+        "    printf '%s\\n' '{\"accepted\":true,\"acceptedReasons\":[\"The trusted root matches runtime issuance.\"],\"rejectedReasons\":[]}'",
+        "    ;;",
+        "  *)",
+        "    printf '%s\\n' '{}'",
+        "    ;;",
+        "esac",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    chmodSync(agentPath, 0o755);
+
+    const buffer = new BufferIO();
+    const code = await main(
+      ["adversarial", "--task", "確認 FM_HOME final read-back"],
+      buffer.io({
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        ACM_STATE_DIR: stateDir,
+        FM_HOME: fmHome,
+        HERDR_TASK_ID: "task-cli-fm-home",
+        HERDR_RUN_ID: "run-cli-fm-home",
+        HERDR_WORKSPACE_ID: "workspace-cli-fm-home",
+        HERDR_TAB_ID: "tab-cli-fm-home",
+        HERDR_PANE_ID: "pane-cli-fm-home",
+      }),
+    );
+
+    expect(code).toBe(0);
+    expect(buffer.stdout).toContain("對抗式架構審查");
+    expect(buffer.stdout).toContain("證據層：");
+    expect(buffer.stdout).not.toContain("BLOCKED");
   });
 });

@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { runDoctor } from "./probe.ts";
+import { resolveFirstmateAuthorityRoot } from "./authority/firstmate-decision-authority.ts";
 import { renderDoctorText, renderPane } from "./render.ts";
 import {
   bootstrapFirstmate,
@@ -335,10 +336,15 @@ async function runStandardCommand(
     );
     return 1;
   }
+  const trustedAuthorityRoot = resolveFirstmateAuthorityRoot(
+    stateDir(io),
+    io.env,
+  );
   const presented = markStandardRunPresented(
     result.record.recordPath,
     conclusion,
     observed,
+    trustedAuthorityRoot,
   );
   if (!presented) {
     io.stderr.write("Standard durable report 與 pane read-back 不一致。\n");
@@ -422,7 +428,14 @@ async function runHighIntensityCommand(
       env: io.env,
     }),
   });
-  const readBack = readHighIntensityRunRecord(result.record.recordPath);
+  const trustedAuthorityRoot = resolveFirstmateAuthorityRoot(
+    stateDir(io),
+    io.env,
+  );
+  const readBack = readHighIntensityRunRecord(
+    result.record.recordPath,
+    trustedAuthorityRoot,
+  );
   if (!result.ok || readBack === undefined || readBack.status !== "completed") {
     io.stdout.write(
       `BLOCKED: ${result.record.blockers.join("; ") || "durable_readback_failed"}\n`

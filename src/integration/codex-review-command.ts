@@ -223,25 +223,8 @@ export async function runCodexReviewFromHerdrSelection(
   if (decided.status !== "resolved") {
     return fail("firstmate_decision_issuance_failed");
   }
-  const workflowDecision = decided.workflowDecision;
-  const workflowDecisionReceipt = decided.receipt;
-  const reviewer = workflowAuthority.authorizeStage({
-    workflowDecision,
-    receipt: workflowDecisionReceipt,
-    stageId: "reviewer",
-  }).roleAssignment;
-  const reportComposer = workflowAuthority.authorizeStage({
-    workflowDecision,
-    receipt: workflowDecisionReceipt,
-    stageId: "report",
-  }).roleAssignment;
-  if (
-    reportComposer.role !== "report_composer"
-    || reportComposer.provider !== "firstmate"
-  ) {
-    return fail("firstmate_decision_issuance_failed");
-  }
-  const model = reviewer.resolvedModel;
+  let workflowDecision = decided.workflowDecision;
+  let workflowDecisionReceipt = decided.receipt;
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
   });
@@ -264,20 +247,6 @@ export async function runCodexReviewFromHerdrSelection(
     ),
     now: now(),
   });
-  const dispatchKey = workflowDispatchIdempotencyKey(
-    opened.run.runId,
-    workflowDecision.decisionHash,
-    "reviewer",
-    null,
-  );
-  const capsuleInput = reviewCapsuleInput(
-    enriched.value,
-    workflowDecision,
-    workflowDecisionReceipt,
-    opened.run.runId,
-    dispatchKey,
-    now,
-  );
   if (opened.kind === "coalesced_completed") {
     const artifact = opened.run.completedArtifact;
     if (artifact === null) {
@@ -287,7 +256,7 @@ export async function runCodexReviewFromHerdrSelection(
       artifact.path,
       artifact.hash,
       opened.run.runId,
-      dispatchKey,
+      null,
       trustedAuthorityRoot,
     );
     if (capsule === null) {
@@ -306,6 +275,52 @@ export async function runCodexReviewFromHerdrSelection(
       dedupeStatus: "coalesced_completed",
     };
   }
+  if (opened.kind !== "created") {
+    const canonical = readIssuedWorkflowDecision(
+      opened.run.intent.decisionVersion,
+      trustedAuthorityRoot,
+    );
+    if (canonical === null) {
+      return fail(
+        opened.kind === "coalesced_active"
+          ? "canonical_review_active"
+          : "canonical_review_requires_reconciliation",
+      );
+    }
+    workflowDecision = canonical.workflowDecision;
+    workflowDecisionReceipt = canonical.workflowDecisionReceipt;
+  }
+  const reviewer = workflowAuthority.authorizeStage({
+    workflowDecision,
+    receipt: workflowDecisionReceipt,
+    stageId: "reviewer",
+  }).roleAssignment;
+  const reportComposer = workflowAuthority.authorizeStage({
+    workflowDecision,
+    receipt: workflowDecisionReceipt,
+    stageId: "report",
+  }).roleAssignment;
+  if (
+    reportComposer.role !== "report_composer"
+    || reportComposer.provider !== "firstmate"
+  ) {
+    return fail("firstmate_decision_issuance_failed");
+  }
+  const model = reviewer.resolvedModel;
+  const dispatchKey = workflowDispatchIdempotencyKey(
+    opened.run.runId,
+    workflowDecision.decisionHash,
+    "reviewer",
+    null,
+  );
+  const capsuleInput = reviewCapsuleInput(
+    enriched.value,
+    workflowDecision,
+    workflowDecisionReceipt,
+    opened.run.runId,
+    dispatchKey,
+    now,
+  );
   let lease: RegistryLease;
   let restoredStart: NativeReviewStartArtifact | null = null;
   if (opened.kind === "created") {
@@ -859,7 +874,7 @@ function readCompletedCapsule(
   path: string,
   expectedHash: string,
   expectedRunId: string,
-  expectedIdempotencyKey: string,
+  expectedIdempotencyKey: string | null,
   trustedAuthorityRoot: string,
 ): ReviewCapsule | null {
   try {
@@ -869,11 +884,54 @@ function readCompletedCapsule(
     if (!isReviewCapsule(value, trustedAuthorityRoot)) return null;
     if (
       value.authority.canonicalRunId !== expectedRunId
-      || value.authority.idempotencyKey !== expectedIdempotencyKey
+      || (
+        expectedIdempotencyKey !== null
+        && value.authority.idempotencyKey !== expectedIdempotencyKey
+      )
     ) {
       return null;
     }
     return value;
+  } catch {
+    return null;
+  }
+}
+
+function readIssuedWorkflowDecision(
+  workflowDecisionId: string | undefined,
+  trustedAuthorityRoot: string,
+): {
+  readonly workflowDecision: WorkflowDecisionEnvelope;
+  readonly workflowDecisionReceipt: FirstmateDecisionReceipt;
+} | null {
+  if (
+    workflowDecisionId === undefined
+    || !/^wfd_[a-f0-9]{32}$/.test(workflowDecisionId)
+  ) {
+    return null;
+  }
+  try {
+    const decision = JSON.parse(
+      readFileSync(
+        join(trustedAuthorityRoot, "decisions", `${workflowDecisionId}.json`),
+        "utf8",
+      ),
+    ) as unknown;
+    assertWorkflowDecisionEnvelope(decision);
+    const receipt = JSON.parse(
+      readFileSync(
+        join(trustedAuthorityRoot, "receipts", `${workflowDecisionId}.json`),
+        "utf8",
+      ),
+    ) as unknown;
+    if (!isFirstmateDecisionReceipt(receipt)) return null;
+    if (!verifyFirstmateDecisionReceipt(decision, receipt, trustedAuthorityRoot)) {
+      return null;
+    }
+    return {
+      workflowDecision: decision,
+      workflowDecisionReceipt: receipt,
+    };
   } catch {
     return null;
   }

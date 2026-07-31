@@ -173,6 +173,7 @@ export interface StandardRunResult {
   readonly record: StandardRunRecord;
   readonly dedupeStatus:
     | "new"
+    | "reconciled"
     | "coalesced_active"
     | "coalesced_completed"
     | "reconciliation_required";
@@ -318,16 +319,19 @@ export async function createStandardRun(
       decided.reason,
     );
   }
-  const workflowDecision = decided.workflowDecision;
-  const workflowDecisionReceipt = decided.receipt;
-  const routingDecision = decided.routingDecision;
-  const authorTask = architectureTask(options.task, workflowDecision);
-  const authorScopeBlocker = validateQuickTaskScope(authorTask, projectDir);
-  if (authorScopeBlocker !== undefined) {
+  let workflowDecision = decided.workflowDecision;
+  let workflowDecisionReceipt = decided.receipt;
+  let routingDecision = decided.routingDecision;
+  const initialAuthorTask = architectureTask(options.task, workflowDecision);
+  const initialAuthorScopeBlocker = validateQuickTaskScope(
+    initialAuthorTask,
+    projectDir,
+  );
+  if (initialAuthorScopeBlocker !== undefined) {
     return blocked(
       { ...provisional },
       now,
-      `author_scope_invalid:${authorScopeBlocker}`,
+      `author_scope_invalid:${initialAuthorScopeBlocker}`,
     );
   }
   const registry = new FileRunRegistry({
@@ -354,7 +358,7 @@ export async function createStandardRun(
   });
   const id = `standard-${opened.run.runId.slice(4)}`;
   const recordPath = join(stateDir, "standard-runs", `${id}.json`);
-  const base: StandardRunRecord = {
+  let base: StandardRunRecord = {
     ...provisional,
     id,
     recordPath,
@@ -376,6 +380,49 @@ export async function createStandardRun(
       projectDir,
       env: options.env,
     });
+  const existing =
+    opened.kind === "created"
+      ? undefined
+      : readStandardRunRecord(recordPath, trustedAuthorityRoot);
+  if (opened.kind !== "created") {
+    if (
+      existing === undefined
+      || existing.workflowDecision === null
+      || existing.workflowDecisionReceipt === null
+      || existing.routingDecision === null
+    ) {
+      return {
+        ok: false,
+        record: existing ?? {
+          ...base,
+          blockers: [
+            opened.kind === "coalesced_active"
+              ? "canonical_run_active"
+              : "canonical_run_requires_reconciliation",
+          ],
+        },
+        dedupeStatus:
+          opened.kind === "coalesced_active"
+            ? "coalesced_active"
+            : "reconciliation_required",
+      };
+    }
+    workflowDecision = existing.workflowDecision;
+    workflowDecisionReceipt = existing.workflowDecisionReceipt;
+    routingDecision = existing.routingDecision;
+    base = existing;
+  }
+  const authorTask = opened.kind === "created"
+    ? initialAuthorTask
+    : architectureTask(base.task, workflowDecision);
+  const authorScopeBlocker = validateQuickTaskScope(authorTask, projectDir);
+  if (authorScopeBlocker !== undefined) {
+    return blocked(
+      { ...base },
+      now,
+      `author_scope_invalid:${authorScopeBlocker}`,
+    );
+  }
   const authorStage = workflowAuthority.authorizeStage({
     workflowDecision,
     receipt: workflowDecisionReceipt,
@@ -434,7 +481,6 @@ export async function createStandardRun(
   let reconciledRepair: StandardReviewOutcome | null = null;
 
   if (opened.kind !== "created") {
-    const existing = readStandardRunRecord(recordPath, trustedAuthorityRoot);
     if (
       opened.kind === "coalesced_completed"
       && existing !== undefined
@@ -1040,6 +1086,7 @@ export async function createStandardRun(
       ...base,
       updatedAt: now(),
       status: "completed",
+      blockers: [],
       author,
       review,
       reviewAttempts,
@@ -1061,7 +1108,11 @@ export async function createStandardRun(
       },
       now: now(),
     });
-    return { ok: true, record, dedupeStatus: "new" };
+    return {
+      ok: true,
+      record,
+      dedupeStatus: opened.kind === "created" ? "new" : "reconciled",
+    };
   } finally {
     releaseLeaseIfHeld(registry, lease);
   }
@@ -1160,8 +1211,9 @@ export function markStandardRunPresented(
   path: string,
   expectedText: string,
   observedPaneText: string,
+  trustedAuthorityRoot = inferFirstmateAuthorityRootFromRecordPath(path),
 ): StandardRunRecord | undefined {
-  const record = readStandardRunRecord(path);
+  const record = readStandardRunRecord(path, trustedAuthorityRoot);
   if (
     record === undefined ||
     !expectedText.trim() ||
@@ -1169,14 +1221,17 @@ export function markStandardRunPresented(
   ) {
     return undefined;
   }
-  return writeStandardRecord({
-    ...record,
-    updatedAt: new Date().toISOString(),
-    claims: {
-      ...record.claims,
-      reportReadbackMatchesPane: true,
+  return writeStandardRecord(
+    {
+      ...record,
+      updatedAt: new Date().toISOString(),
+      claims: {
+        ...record.claims,
+        reportReadbackMatchesPane: true,
+      },
     },
-  });
+    trustedAuthorityRoot,
+  );
 }
 
 export function defaultStandardRuntimePorts(options: {
@@ -1745,13 +1800,14 @@ function writeStandardRecord(
   writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`);
   renameSync(temporary, record.recordPath);
   if (record.status !== "completed") return record;
+  const persisted: unknown = JSON.parse(readFileSync(record.recordPath, "utf8"));
   const readBack = readStandardRunRecord(
     record.recordPath,
     trustedAuthorityRoot,
   );
   if (
     readBack === undefined
-    || JSON.stringify(readBack) !== JSON.stringify(record)
+    || JSON.stringify(readBack) !== JSON.stringify(persisted)
   ) {
     throw new Error("standard_record_readback_failed");
   }

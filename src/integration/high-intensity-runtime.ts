@@ -245,9 +245,9 @@ export async function createHighIntensityRun(
       decided.reason,
     );
   }
-  const routingDecision = decided.routingDecision;
-  const workflowDecision = decided.workflowDecision;
-  const workflowDecisionReceipt = decided.receipt;
+  let routingDecision = decided.routingDecision;
+  let workflowDecision = decided.workflowDecision;
+  let workflowDecisionReceipt = decided.receipt;
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
   });
@@ -271,7 +271,7 @@ export async function createHighIntensityRun(
   });
   const id = `high-intensity-${opened.run.runId.slice(4)}`;
   const recordPath = join(stateDir, "high-intensity-runs", `${id}.json`);
-  const base: HighIntensityRunRecord = {
+  let base: HighIntensityRunRecord = {
     ...provisional,
     id,
     routingDecision,
@@ -286,12 +286,41 @@ export async function createHighIntensityRun(
     },
   };
 
+  const existing =
+    opened.kind === "created"
+      ? undefined
+      : readHighIntensityRunRecord(recordPath, trustedAuthorityRoot);
+  if (opened.kind !== "created") {
+    if (
+      existing === undefined
+      || existing.workflowDecision === null
+      || existing.workflowDecisionReceipt === null
+      || existing.routingDecision === null
+    ) {
+      return {
+        ok: false,
+        record: existing ?? {
+          ...base,
+          blockers: [
+            opened.kind === "coalesced_active"
+              ? "canonical_run_active"
+              : "canonical_run_requires_reconciliation",
+          ],
+        },
+        dedupeStatus:
+          opened.kind === "coalesced_active"
+            ? "coalesced_active"
+            : "reconciliation_required",
+      };
+    }
+    routingDecision = existing.routingDecision;
+    workflowDecision = existing.workflowDecision;
+    workflowDecisionReceipt = existing.workflowDecisionReceipt;
+    base = existing;
+  }
+
   let lease: RegistryLease | null = null;
   if (opened.kind !== "created") {
-    const existing = readHighIntensityRunRecord(
-      recordPath,
-      trustedAuthorityRoot,
-    );
     if (
       opened.kind === "coalesced_completed"
       && existing !== undefined
@@ -371,7 +400,7 @@ export async function createHighIntensityRun(
     const researchResult = await executeModel({
       port: options.modelPort,
       assignment: stageAssignment("research"),
-      prompt: buildResearchPrompt(options.input),
+      prompt: buildResearchPrompt(base.input),
       contextId: `${id}:research`,
       phase: "research",
       round: null,
@@ -413,7 +442,7 @@ export async function createHighIntensityRun(
       const authorResult = await executeModel({
         port: options.modelPort,
         assignment: stageAssignment("author"),
-        prompt: buildAuthorPrompt(options.input, research, coverage, round),
+        prompt: buildAuthorPrompt(base.input, research, coverage, round),
         contextId: `${id}:round-${round}:author`,
         phase: "author",
         round,
@@ -450,7 +479,7 @@ export async function createHighIntensityRun(
         port: options.modelPort,
         assignment: stageAssignment("challenger"),
         prompt: buildChallengerPrompt(
-          options.input,
+          base.input,
           research,
           coverage,
           round,
@@ -494,7 +523,7 @@ export async function createHighIntensityRun(
         port: options.modelPort,
         assignment: stageAssignment("judge"),
         prompt: buildJudgePrompt(
-          options.input,
+          base.input,
           research,
           coverage,
           round,
@@ -577,9 +606,9 @@ export async function createHighIntensityRun(
       );
     }
     const composed = composeHighIntensityReport({
-      input: options.input,
+      input: base.input,
       routingDecision,
-      availability: options.availability,
+      availability: base.availability,
       research,
       coverage,
       adversarial,

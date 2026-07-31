@@ -425,6 +425,76 @@ describe("standard runtime integration", () => {
     expect(reconciled.record.id).toBe(interrupted.record.id);
   });
 
+  test("reconciles an unknown Firstmate outcome with the original decision after availability changes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
+    const driftedAvailability: AvailabilitySnapshot = {
+      ...availability,
+      id: "availability-runtime-2",
+      capturedAt: "2026-07-30T15:01:00.000Z",
+    };
+    const basePorts = successfulPorts();
+    let authorDispatches = 0;
+    let recoveredAuthor:
+      | Awaited<ReturnType<StandardRuntimePorts["dispatchAuthor"]>>
+      | null = null;
+    const readBackDecisionHashes: string[] = [];
+    const ports: StandardRuntimePorts = {
+      async dispatchAuthor(request) {
+        authorDispatches += 1;
+        recoveredAuthor = await basePorts.dispatchAuthor(request);
+        throw new Error("crash_after_downstream_accept");
+      },
+      async readBackAuthor(request) {
+        readBackDecisionHashes.push(request.decisionHash);
+        return recoveredAuthor === null
+          ? {
+              status: "not_found" as const,
+              checkedAt: "2026-07-30T15:01:00.000Z",
+              reason: "author_receipt_missing",
+            }
+          : {
+              status: "found" as const,
+              outcome: recoveredAuthor,
+            };
+      },
+      review: basePorts.review,
+    };
+    const env = {
+      ACM_STATE_DIR: join(root, "state"),
+      HERDR_PANE_ID: "w1:p1",
+      HERDR_WORKSPACE_ID: "w1",
+      HERDR_TAB_ID: "w1:t1",
+    };
+
+    const interrupted = await createStandardRun({
+      task: "availability 變動也只能 read back 原 canonical decision",
+      cwd: root,
+      env,
+      availability,
+      now: () => "2026-07-30T15:00:00.000Z",
+      ports,
+    });
+    const reconciled = await createStandardRun({
+      task: "availability 變動也只能 read back 原 canonical decision",
+      cwd: root,
+      env,
+      availability: driftedAvailability,
+      now: () => "2026-07-30T15:01:00.000Z",
+      ports,
+    });
+
+    expect(interrupted.ok).toBe(false);
+    expect(reconciled.ok).toBe(true);
+    expect(authorDispatches).toBe(1);
+    expect(reconciled.record.id).toBe(interrupted.record.id);
+    expect(reconciled.record.workflowDecision?.workflowDecisionId).toBe(
+      interrupted.record.workflowDecision?.workflowDecisionId,
+    );
+    expect(readBackDecisionHashes.at(-1)).toBe(
+      interrupted.record.workflowDecision?.decisionHash,
+    );
+  });
+
   test("keeps the canonical run unknown when author read-back identity differs", async () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-standard-"));
     const basePorts = successfulPorts();
