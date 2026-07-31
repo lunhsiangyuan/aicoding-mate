@@ -414,6 +414,7 @@ async function runHighIntensityCommand(
     availability,
     stateDir: stateDir(io),
     projectDir: parsed.projectDir,
+    env: io.env,
     recipe,
     source: highIntensitySource(io.env),
     modelPort: createHighIntensityCliPort({
@@ -450,14 +451,15 @@ async function runHighIntensityCommand(
 function highIntensitySource(
   env: NodeJS.ProcessEnv,
 ): SourceLineage | undefined {
+  const taskId = env.ACM_SOURCE_TASK_ID ?? env.HERDR_TASK_ID;
+  const runId = env.ACM_SOURCE_RUN_ID ?? env.HERDR_RUN_ID;
   const workspace = env.HERDR_WORKSPACE_ID;
   const tabId = env.HERDR_TAB_ID;
   const paneId = env.HERDR_PANE_ID;
-  if (!workspace || !tabId || !paneId) return undefined;
-  const stable = `${workspace}:${tabId}:${paneId}`;
+  if (!taskId || !runId || !workspace || !tabId || !paneId) return undefined;
   return {
-    taskId: env.ACM_SOURCE_TASK_ID ?? stable,
-    runId: env.ACM_SOURCE_RUN_ID ?? stable,
+    taskId,
+    runId,
     workspace,
     tabId,
     paneId,

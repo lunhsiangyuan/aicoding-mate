@@ -4,7 +4,10 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import type { AvailabilitySnapshot } from "../src/contracts/index.ts";
+import type {
+  AvailabilitySnapshot,
+  SourceLineage,
+} from "../src/contracts/index.ts";
 import {
   createHighIntensityRun,
   readHighIntensityRunRecord,
@@ -58,6 +61,14 @@ const availability: AvailabilitySnapshot = {
   ],
 };
 
+const source: SourceLineage = {
+  taskId: "task-high-runtime-1",
+  runId: "run-high-runtime-1",
+  workspace: "workspace-high-runtime-1",
+  tabId: "tab-high-runtime-1",
+  paneId: "pane-high-runtime-1",
+};
+
 describe("high-intensity runtime", () => {
   test("runs research plus two adversarial rounds and writes a durable record", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
@@ -68,6 +79,7 @@ describe("high-intensity runtime", () => {
       input,
       availability,
       stateDir,
+      source,
       modelPort: port,
       now: () => "2026-07-31T01:00:00.000Z",
     });
@@ -151,6 +163,7 @@ describe("high-intensity runtime", () => {
       input,
       availability,
       stateDir,
+      source,
       modelPort: {
         async execute(request) {
           requests.push(request);
@@ -174,6 +187,7 @@ describe("high-intensity runtime", () => {
         input,
         availability,
         stateDir,
+        source,
         modelPort: scriptedPort([]),
         now,
       }),
@@ -181,6 +195,7 @@ describe("high-intensity runtime", () => {
         input,
         availability,
         stateDir,
+        source,
         modelPort: scriptedPort([]),
         now,
       }),
@@ -203,6 +218,7 @@ describe("high-intensity runtime", () => {
       input,
       availability,
       stateDir,
+      source,
       modelPort: scriptedPort([]),
       now: () => "2026-07-31T01:00:00.000Z",
     });
@@ -230,6 +246,7 @@ describe("high-intensity runtime", () => {
       input,
       availability,
       stateDir,
+      source,
       modelPort: {
         async execute() {
           throw new Error("secret provider stack trace");
@@ -255,6 +272,7 @@ describe("high-intensity runtime", () => {
       input,
       availability,
       stateDir,
+      source,
       modelPort: {
         async execute(request) {
           return provenance(request, "");
@@ -277,6 +295,7 @@ describe("high-intensity runtime", () => {
       input,
       availability,
       stateDir,
+      source,
       modelPort: {
         async execute(request) {
           return {
@@ -291,6 +310,16 @@ describe("high-intensity runtime", () => {
     expect(result.ok).toBe(false);
     expect(result.record.blockers).toContain("provenance_mismatch:research");
     expect(result.record.calls).toEqual([]);
+
+    const repeated = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      source,
+      modelPort: scriptedPort([]),
+      now: () => "2026-07-31T01:01:00.000Z",
+    });
+    expect(repeated.dedupeStatus).toBe("reconciliation_required");
   });
 
   test("fails closed before model calls when judge is below architecture floor", async () => {
@@ -309,6 +338,7 @@ describe("high-intensity runtime", () => {
       input,
       availability: lowJudge,
       stateDir,
+      source,
       modelPort: {
         async execute(request) {
           requests.push(request);
@@ -332,6 +362,7 @@ describe("high-intensity runtime", () => {
       input,
       availability,
       stateDir,
+      source,
       modelPort: scriptedPort(requests),
       now: () => "2026-07-31T01:00:00.000Z",
       decisionAuthority: {
@@ -351,6 +382,43 @@ describe("high-intensity runtime", () => {
     expect(result.record.blockers).toContain(
       "firstmate_decision_issuance_failed:authority_store_unavailable",
     );
+  });
+
+  test("blocks before decision issuance when exact source lineage is missing", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
+    const requests: HighIntensityModelRequest[] = [];
+    const result = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      modelPort: scriptedPort(requests),
+      now: () => "2026-07-31T01:00:00.000Z",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.record.workflowDecision).toBeNull();
+    expect(result.record.blockers).toEqual(["source_lineage_incomplete"]);
+    expect(requests).toEqual([]);
+  });
+
+  test("uses FM_HOME as the Firstmate authority trust anchor", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
+    const stateDir = join(root, "state");
+    const fmHome = join(root, "firstmate-home");
+    const result = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      env: { FM_HOME: fmHome },
+      source,
+      modelPort: scriptedPort([]),
+      now: () => "2026-07-31T01:00:00.000Z",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.record.workflowDecisionReceipt?.receiptPath.startsWith(
+      join(fmHome, "aicoding-mate-authority"),
+    )).toBe(true);
   });
 });
 

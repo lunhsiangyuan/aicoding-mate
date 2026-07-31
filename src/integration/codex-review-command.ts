@@ -583,16 +583,14 @@ function parseBasicHerdrSelection(
   if (focusedPaneId === null || focusedPaneId.trim().length === 0) {
     return { ok: false, reason: "source_pane_missing" };
   }
-  const workspace =
-    firstString(
-      record.workspace_id,
-      record.workspace,
-      record.workspace_label,
-      record.workspace_cwd,
-    ) ?? focusedPaneId;
-  const tabId =
-    firstString(record.tab_id, record.tabId, record.tab_label) ??
-    focusedPaneId;
+  const workspace = firstString(record.workspace_id);
+  if (workspace === null || workspace.trim().length === 0) {
+    return { ok: false, reason: "source_workspace_missing" };
+  }
+  const tabId = firstString(record.tab_id);
+  if (tabId === null || tabId.trim().length === 0) {
+    return { ok: false, reason: "source_tab_missing" };
+  }
   return {
     ok: true,
     value: {

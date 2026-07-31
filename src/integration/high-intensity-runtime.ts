@@ -130,6 +130,7 @@ export interface HighIntensityRunOptions {
   readonly availability: AvailabilitySnapshot;
   readonly stateDir: string;
   readonly projectDir?: string;
+  readonly env?: NodeJS.ProcessEnv;
   readonly modelPort: HighIntensityModelPort;
   readonly recipe?: "adversarial" | "research";
   readonly source?: SourceLineage;
@@ -208,7 +209,10 @@ export async function createHighIntensityRun(
   }
 
   const recipe = options.recipe ?? "adversarial";
-  const source = options.source ?? directSourceLineage(options.input);
+  const source = options.source;
+  if (!isCompleteSourceLineage(source)) {
+    return blocked(provisional, now, "source_lineage_incomplete");
+  }
   const workflowDecision = createFirstmateWorkflowDecision({
     recipe,
     intentHash: inputHash(options.input),
@@ -221,7 +225,7 @@ export async function createHighIntensityRun(
   const decisionAuthority =
     options.decisionAuthority
     ?? new FileFirstmateDecisionAuthority({
-      rootDir: resolveFirstmateAuthorityRoot(stateDir),
+      rootDir: resolveFirstmateAuthorityRoot(stateDir, options.env),
       now,
     });
   let workflowDecisionReceipt: FirstmateDecisionReceipt;
@@ -624,31 +628,22 @@ async function executeModel(options: {
       idempotencyKey,
     });
   } catch {
-    options.registry.markUnknownOutcome(options.lease, {
-      reason: `model_execution_unknown_outcome:${options.phase}`,
-      readback: {
-        status: "mismatch",
-        checkedAt: options.now(),
-        reason: "adapter_has_no_verified_downstream_readback",
-      },
-      now: options.now(),
-    });
-    return {
-      ok: false,
-      reason: `model_execution_unknown_outcome:${options.phase}`,
-      registryStatus: "unknown_outcome",
-    };
+    return markModelUnknownOutcome(
+      options,
+      `model_execution_unknown_outcome:${options.phase}`,
+      "adapter_has_no_verified_downstream_readback",
+    );
   }
   if (
     result.alias !== options.assignment.alias ||
     result.family !== options.assignment.family ||
     result.model !== options.assignment.resolvedModel
   ) {
-    return {
-      ok: false,
-      reason: `provenance_mismatch:${options.phase}`,
-      registryStatus: "failed",
-    };
+    return markModelUnknownOutcome(
+      options,
+      `provenance_mismatch:${options.phase}`,
+      "model_returned_with_unverified_assignment_provenance",
+    );
   }
   const receiptIdentity: ModelDispatchIdentity = {
     idempotencyKey,
@@ -665,11 +660,11 @@ async function executeModel(options: {
     receiptReadback === undefined
     || receiptReadback.rawOutput !== result.rawOutput
   ) {
-    return {
-      ok: false,
-      reason: `model_receipt_readback_failed:${options.phase}`,
-      registryStatus: "failed",
-    };
+    return markModelUnknownOutcome(
+      options,
+      `model_receipt_readback_failed:${options.phase}`,
+      "model_returned_without_matching_durable_receipt",
+    );
   }
   options.registry.acceptDispatch(options.lease, {
     idempotencyKey,
@@ -692,6 +687,36 @@ async function executeModel(options: {
     receiptPath: result.receiptPath,
   });
   return { ok: true, rawOutput: result.rawOutput };
+}
+
+function markModelUnknownOutcome(
+  options: {
+    readonly registry: FileRunRegistry;
+    readonly lease: RegistryLease;
+    readonly now: () => string;
+  },
+  reason: string,
+  readbackReason: string,
+): {
+  readonly ok: false;
+  readonly reason: string;
+  readonly registryStatus: "unknown_outcome";
+} {
+  const checkedAt = options.now();
+  options.registry.markUnknownOutcome(options.lease, {
+    reason,
+    readback: {
+      status: "mismatch",
+      checkedAt,
+      reason: readbackReason,
+    },
+    now: checkedAt,
+  });
+  return {
+    ok: false,
+    reason,
+    registryStatus: "unknown_outcome",
+  };
 }
 
 function buildResearchPrompt(input: HighIntensityInput): string {
@@ -1113,15 +1138,15 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function directSourceLineage(input: HighIntensityInput): SourceLineage {
-  const hash = inputHash(input);
-  return {
-    taskId: `direct-${hash}`,
-    runId: `direct-${hash}`,
-    workspace: "direct",
-    tabId: "direct",
-    paneId: "direct",
-  };
+function isCompleteSourceLineage(
+  value: SourceLineage | undefined,
+): value is SourceLineage {
+  return value !== undefined
+    && value.taskId.trim().length > 0
+    && value.runId.trim().length > 0
+    && value.workspace.trim().length > 0
+    && value.tabId.trim().length > 0
+    && value.paneId.trim().length > 0;
 }
 
 function normalizeText(value: string): string {

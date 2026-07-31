@@ -25,8 +25,8 @@ import type {
 function invocation(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     selected_text: "Review this adapter source.",
-    workspace_label: "workspace-1",
-    tab_label: "tab-1",
+    workspace_id: "workspace-1",
+    tab_id: "tab-1",
     focused_pane_id: "pane-1",
     ...overrides,
   });
@@ -253,6 +253,34 @@ describe("Codex review command bridge", () => {
       ok: false,
       status: "failed_closed",
       reason: "firstmate_source_run_not_found",
+    });
+    expect(created).toBe(0);
+  });
+
+  test("rejects workspace and tab labels when exact Herdr IDs are absent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-command-"));
+    let created = 0;
+    const result = await runCodexReviewFromHerdrSelection({
+      contextJson: invocation({
+        workspace_id: undefined,
+        tab_id: undefined,
+        workspace_label: "workspace-label-only",
+        tab_label: "tab-label-only",
+      }),
+      cwd: root,
+      env: {},
+      ports: {
+        createAppServerReviewPort() {
+          created += 1;
+          return fakeReviewPort();
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "source_workspace_missing",
     });
     expect(created).toBe(0);
   });
