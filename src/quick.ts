@@ -251,7 +251,7 @@ export function createQuickRun(options: QuickOptions): QuickResult {
   const preflight = preflightRuntime(firstmateRoot, projectDir, runtimeEnv);
   if (!baseRecord.source.paneId) {
     preflight.push("Quick 必須從 Herdr pane 啟動；請執行 `aicoding-mate open`，再輸入 `/quick`。");
-  } else if (!herdrHasPane(baseRecord.source.paneId, runtimeEnv, firstmateRoot)) {
+  } else if (!herdrHasPane(baseRecord.source.paneId, runtimeEnv, options.cwd)) {
     preflight.push(`來源 Herdr pane ${baseRecord.source.paneId} 不存在；拒絕在無法回傳結果的情況下派工。`);
   }
   const taskScopeBlocker = validateQuickTaskScope(options.task, projectDir);

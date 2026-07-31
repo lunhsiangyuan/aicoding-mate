@@ -10,7 +10,7 @@ Ari 是 Herdr 裡的一個架構控制入口：
 
 介面與文件稱它為 **Ari**。指令仍使用 `aicoding-mate`；這只是穩定的技術名稱，不代表 Herdr 裡還有第二個產品入口。
 
-v0.3.2 只有一個 Herdr 主入口：在 Herdr shell 輸入 `Ari`，直接於目前 pane 進入；Quick、Standard、Expert、Research 與 Learn 都在同一處切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
+v0.3.3 只有一個 Herdr 主入口：在 Herdr shell 輸入 `Ari`，直接於目前 pane 進入；Quick、Standard、Expert、Research 與 Learn 都在同一處切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
 
 ## 安裝與從 Herdr 進入
 
@@ -28,7 +28,7 @@ Ari
 Ari
 ```
 
-它會在目前 pane 進入 Standard；不會另開 tab。輸入 `/quit` 後回到原 Herdr shell。舊的 `bun bin/aicoding-mate open --mode <mode>` 仍可供 automation 使用，但預設只開 overlay。
+它會在目前 pane 進入 Standard；不會另開 tab。入口會顯示「目前專案」：若你位於 git repository 裡，Ari 使用該 checkout root；若你位於 home 等非 git 目錄，Ari 會清楚標示並使用自己的 repository，不會把 home 當成 project。Firstmate 與 run state 固定留在 Ari 安裝 repository。輸入 `/quit` 後回到原 Herdr shell。舊的 `bun bin/aicoding-mate open --mode <mode>` 仍可供 automation 使用，但預設只開 overlay。
 
 第一次使用 Firstmate 前：
 

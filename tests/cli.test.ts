@@ -7,7 +7,9 @@ import {
   mkdtempSync,
   readlinkSync,
   readFileSync,
+  realpathSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +18,7 @@ import {
   conductMateConsole,
   dispatchMateTask,
   main,
+  resolveAriLaunchContext,
   type MateWorkflowRunners,
 } from "../src/cli.ts";
 import {
@@ -217,6 +220,38 @@ describe("cli", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Ari\n目前模式：standard");
     expect(result.stdout).toContain("mode=standard");
+  });
+
+  test("Ari launcher separates its app state from the selected git project", () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-launch-context-"));
+    try {
+      const appRoot = join(root, "app");
+      const nonGitDir = join(root, "home");
+      const projectRoot = join(root, "project");
+      const projectChild = join(projectRoot, "nested");
+      mkdirSync(appRoot, { recursive: true });
+      mkdirSync(nonGitDir, { recursive: true });
+      mkdirSync(projectChild, { recursive: true });
+      expect(
+        spawnSync("git", ["init", "--quiet", projectRoot]).status,
+      ).toBe(0);
+
+      const fallback = resolveAriLaunchContext(nonGitDir, process.env, appRoot);
+      expect(fallback.projectDir).toBe(appRoot);
+      expect(fallback.env.ACM_STATE_DIR).toBe(
+        join(appRoot, "state", "aicoding-mate"),
+      );
+      expect(fallback.env.ACM_PROJECT_FALLBACK).toBe("1");
+
+      const project = resolveAriLaunchContext(projectChild, process.env, appRoot);
+      expect(project.projectDir).toBe(realpathSync(projectRoot));
+      expect(project.env.ACM_STATE_DIR).toBe(
+        join(appRoot, "state", "aicoding-mate"),
+      );
+      expect(project.env.ACM_PROJECT_FALLBACK).toBe("0");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("link installs the Ari launcher into the configured user bin", async () => {

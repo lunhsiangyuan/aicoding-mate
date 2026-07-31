@@ -127,6 +127,40 @@ describe("quick workflow", () => {
     }
   });
 
+  test("does not misreport a live source pane when other preflight resources are missing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "acm-quick-missing-root-"));
+    try {
+      const binDir = join(dir, "bin");
+      mkdirSync(binDir, { recursive: true });
+      fakeToolchain(binDir);
+      const result = createQuickRun({
+        task: "唯讀檢查 package.json",
+        cwd: dir,
+        projectDir: join(dir, "missing-project"),
+        env: {
+          PATH: `${binDir}:/bin:/usr/bin`,
+          ACM_FIRSTMATE_ROOT: join(dir, "missing-firstmate"),
+          ACM_STATE_DIR: join(dir, "state"),
+          ACM_QUICK_SOURCE_PANE: "wA:p1",
+        },
+        now: () => "2026-07-30T12:00:00.000Z",
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.record.blockers.join("\n")).toContain(
+        "Firstmate distro 不存在",
+      );
+      expect(result.record.blockers.join("\n")).toContain(
+        "Quick project 不存在",
+      );
+      expect(result.record.blockers.join("\n")).not.toContain(
+        "來源 Herdr pane wA:p1 不存在",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("bootstraps an isolated home while leaving the pinned distro pristine", () => {
     const dir = mkdtempSync(join(tmpdir(), "acm-bootstrap-ok-"));
     try {

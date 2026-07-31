@@ -4,7 +4,7 @@ Ari 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目�
 
 **Ari** 是使用者看到、對話與稱呼的產品名稱。為了不破壞既有安裝、automation 與 durable lineage，technical identifier 暫時維持 `aicoding-mate`，包括 CLI、repository、plugin ID、state directory 與 authority store。
 
-> 目前狀態：v0.3.2 讓使用者在 Herdr shell 直接輸入 `Ari`，於目前 pane 進入控制面，不另開預設 tab；以 `/quick`、`/standard`、`/expert`、`/research`、`/learn` 切換。真正派工前先顯示本輪 ASCII workflow graph。底層沿用 v0.2 的 Firstmate Workflow Authority 與 canonical Run Registry；slash command 與 graph 只呈現使用者意圖，不取得派工權。
+> 目前狀態：v0.3.3 讓使用者在 Herdr shell 直接輸入 `Ari`，於目前 pane 進入控制面，不另開預設 tab；以 `/quick`、`/standard`、`/expert`、`/research`、`/learn` 切換。launcher 會把 Ari state 固定在安裝 repository，並把目前 git checkout 設為任務 project；若從非 git 目錄進入，會清楚顯示已回退到 Ari repository。真正派工前先顯示本輪 ASCII workflow graph。
 
 ## 它要解決什麼
 
@@ -80,6 +80,8 @@ Ari
 ```
 
 `Ari` 直接佔用目前 pane；輸入 `/quit` 後回到原 shell，不建立新的預設 tab。`aicoding-mate open` 保留給舊 automation，預設改用 overlay。
+
+入口會先顯示「目前專案」。若 shell 位於某個 git repository 的子目錄，Ari 會使用該 checkout root；若 shell 位於 home 等非 git 目錄，Ari 會使用自己的 repository，不會把 home 誤當成 Quick／Standard project。Ari 自己的 Firstmate distro、`FM_HOME` 與 Run Registry 始終留在安裝 repository 的 `state/aicoding-mate`，不跟著 shell 位置漂移。
 
 也可以直接檢查 CLI 與 doctor：
 

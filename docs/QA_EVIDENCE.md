@@ -2,6 +2,38 @@
 
 本文件保存 2026-07-31 在 macOS、Herdr 與 Codex Desktop 的實機 gate。它區分「已證明」「部分成功」「未證明」，不以測試綠燈或 task 曾啟動取代 runtime read-back。
 
+## v0.3.3 home-shell launcher root 修正
+
+使用者在 Herdr home shell `w1R:p1` 啟動 v0.3.2 後，Standard 把 `/Users/lunhsiangyuan` 同時當成 app state root 與 project root，因而誤報 Firstmate distro、七個工具、git checkout 與來源 pane 全部失效。live `herdr api snapshot` 同時證明 `w1R:p1` 實際存在且為 focused pane；根因不是安裝缺失，而是 launcher 的 cwd authority 混用。
+
+v0.3.3 重新 link 並先以 `/quit` 結束舊 Ari process 後，在同一個 `w1R:p1` shell 再輸入 `Ari`：
+
+- banner 讀回目前 project 為本 repository，並清楚標示 home 不是 git checkout、已使用 Ari repository。
+- `process-info` 讀回前景為 `bun /Users/lunhsiangyuan/.local/bin/Ari`，shell PID 仍是原本 `73899`。
+- `/quick 修改檔案` 先顯示 Quick ASCII graph，之後只留下預期的 scope blocker；沒有 Firstmate、toolchain、git root 或 pane blocker。
+- 最終重啟後的 Quick durable record 為 `state/aicoding-mate/runs/quick-20260731t141843775z.json`；其中 Firstmate root 與 `FM_HOME` 都位於本 repository 的 app-owned state。
+- `/standard 刪除所有檔案` 先顯示 Standard ASCII graph，之後只留下預期的 `author_scope_invalid`；evidence 位於本 repository 的 `state/aicoding-mate/standard-runs/`，未回到 `/Users/lunhsiangyuan/state`。
+- `w1R` 全程只有 `p1`，兩個受控拒絕都沒有建立 worker、tab 或 pane；Ari 最後保留在同一 pane 的 Standard prompt。
+
+Automated gate：
+
+- `bun test`：189 pass、0 fail、882 assertions。
+- `bun run typecheck`：exit 0。
+- launcher regression 同時覆蓋非 git home fallback 與 git 子目錄收斂至 checkout root。
+- pane regression 讓 Firstmate root 與 project 故意不存在、Herdr snapshot 保持來源 pane 存在，證明系統保留兩個真 blocker，但不再誤報 pane 不存在。
+
+### v0.3.3 review 與 debugging gate
+
+完整 diff review 未發現 authority、registry、decision 或 adapter routing 漂移；變更只處理 launcher context、preflight probe cwd、兩個回歸與使用說明。環境中沒有 `review-work` 或 `debugging` executable，因此以完整 diff inspection、full suite、真實 Herdr surface 與下列 runtime hypotheses 完成同等 gate。
+
+Claude Fable 5 的唯讀 second opinion 先後以 thinking／ask 兩條 Cursor Agent CLI 路徑執行；兩者在 bounded wait 內均為零輸出，最後由本流程中止為 exit 130。這兩次嘗試只記為 `inconclusive`，不列入 review 通過證據，也沒有修改 workspace。
+
+| 假設 | runtime 證據 | 判定 |
+| --- | --- | --- |
+| home shell 仍會把 Ari state 寫到 `/Users/lunhsiangyuan/state` | 新 Quick／Standard evidence 均位於本 repository 的 `state/aicoding-mate` | 否 |
+| home 仍會被當成 Quick／Standard project | banner 明示使用 Ari repository；Quick preflight 不再出現 `Quick project 必須是 git checkout root：/Users/lunhsiangyuan` | 否 |
+| Firstmate probe 失敗仍會連帶誤報 live source pane | `w1R:p1` live snapshot／process-info 存在；實機 Quick 無 pane blocker，受控 regression 也只保留 Firstmate blocker | 否 |
+
 ## v0.3.2 current-pane 入口與 workflow graph gate
 
 2026-07-31 重新 link 後，Herdr receipt 讀回 plugin `0.3.2`、主 pane compatibility placement `overlay`；同一操作在 `/Users/lunhsiangyuan/.local/bin/Ari` 建立指向本 repository `bin/Ari` 的 launcher。

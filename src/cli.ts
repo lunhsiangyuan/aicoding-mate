@@ -74,6 +74,45 @@ export interface CliIO {
   stderr: Pick<NodeJS.WriteStream, "write">;
 }
 
+export interface AriLaunchContext {
+  readonly projectDir: string;
+  readonly env: NodeJS.ProcessEnv;
+}
+
+export function resolveAriLaunchContext(
+  launchCwd: string,
+  env: NodeJS.ProcessEnv,
+  appRoot = repoRoot(),
+): AriLaunchContext {
+  const gitRoot = spawnSync(
+    "git",
+    ["-C", launchCwd, "rev-parse", "--show-toplevel"],
+    {
+      cwd: launchCwd,
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
+  const detectedProject = gitRoot.status === 0
+    ? gitRoot.stdout.trim()
+    : "";
+  const fellBackToApp = detectedProject.length === 0;
+  const projectDir = fellBackToApp
+    ? resolve(appRoot)
+    : resolve(detectedProject);
+  return {
+    projectDir,
+    env: {
+      ...env,
+      ACM_STATE_DIR:
+        env.ACM_STATE_DIR?.trim()
+        || resolve(appRoot, "state", "aicoding-mate"),
+      ACM_PROJECT_FALLBACK: fellBackToApp ? "1" : "0",
+    },
+  };
+}
+
 const pluginId = "ai-coding-mate";
 
 export async function main(args: string[], io: CliIO): Promise<number> {
@@ -733,7 +772,12 @@ export async function conductMateConsole(
   const once = io.env.ACM_PANE_ONCE === "1";
   io.stdout.write(
     "Ari\n"
-      + `目前模式：${state.mode}。直接輸入需求，或輸入 /help 查看切換方式。\n`,
+      + `目前模式：${state.mode}。直接輸入需求，或輸入 /help 查看切換方式。\n`
+      + `目前專案：${io.cwd}`
+      + (io.env.ACM_PROJECT_FALLBACK === "1"
+        ? "（啟動位置不是 git checkout，使用 Ari repository）"
+        : "")
+      + "\n",
   );
 
   while (true) {
