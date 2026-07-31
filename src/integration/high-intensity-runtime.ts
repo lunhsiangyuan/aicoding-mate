@@ -704,6 +704,7 @@ async function executeModel(options: {
   if (existingDispatch !== undefined) {
     let readback: HighIntensityModelReadback;
     try {
+      renewHighIntensityLease(options);
       readback = await options.port.readBack(request);
     } catch {
       return markModelUnknownOutcome(
@@ -739,6 +740,7 @@ async function executeModel(options: {
         now: options.now(),
       });
       try {
+        renewHighIntensityLease(options);
         result = await options.port.execute(request);
       } catch {
         return markModelUnknownOutcome(
@@ -767,6 +769,7 @@ async function executeModel(options: {
       now: options.now(),
     });
     try {
+      renewHighIntensityLease(options);
       result = await options.port.execute(request);
     } catch {
       return markModelUnknownOutcome(
@@ -870,6 +873,17 @@ function markModelUnknownOutcome(
     reason,
     registryStatus: "unknown_outcome",
   };
+}
+
+function renewHighIntensityLease(options: {
+  readonly registry: FileRunRegistry;
+  readonly lease: RegistryLease;
+  readonly now: () => string;
+}): void {
+  options.registry.renewLease(options.lease, {
+    leaseTtlMs: 900_000,
+    now: options.now(),
+  });
 }
 
 function buildResearchPrompt(input: HighIntensityInput): string {

@@ -301,6 +301,13 @@ export async function runCodexReviewFromHerdrSelection(
   }
 
   try {
+    registry.renewLease(lease, {
+      leaseTtlMs: parsePositiveInteger(
+        options.env.ACM_RUN_LEASE_TTL_MS,
+        900_000,
+      ),
+      now: now(),
+    });
     const capsuleResult = await createReviewCapsule(capsuleInput, {
       appServer,
       trustedAuthorityRoot,

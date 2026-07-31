@@ -496,6 +496,7 @@ export async function createStandardRun(
         now: now(),
       });
     }
+    renewRunLease(registry, lease, options.env, now);
     const readBack = await ports.readBackAuthor(dispatchRequest);
     if (readBack.status === "found") {
       reconciledAuthor = readBack.outcome;
@@ -543,6 +544,7 @@ export async function createStandardRun(
           dedupeStatus: "reconciliation_required",
         };
       }
+      renewRunLease(registry, lease, options.env, now);
       const reviewReadback = await ports.readBackReview(
         reviewerAssignment,
         reviewExecution,
@@ -606,6 +608,7 @@ export async function createStandardRun(
           dedupeStatus: "reconciliation_required",
         };
       }
+      renewRunLease(registry, lease, options.env, now);
       const repairReadback = await ports.readBackReview(
         reviewerAssignment,
         repairExecution,
@@ -665,6 +668,7 @@ export async function createStandardRun(
         now: now(),
       });
       try {
+        renewRunLease(registry, lease, options.env, now);
         author = await ports.dispatchAuthor(dispatchRequest);
       } catch {
         registry.markUnknownOutcome(lease, {
@@ -716,6 +720,7 @@ export async function createStandardRun(
         now: now(),
       });
       try {
+        renewRunLease(registry, lease, options.env, now);
         review = await ports.review(
           buildReviewPrompt(options.task, author.summary, routingDecision),
           reviewerAssignment,
@@ -807,6 +812,7 @@ export async function createStandardRun(
           now: now(),
         });
         try {
+          renewRunLease(registry, lease, options.env, now);
           repairedReview = await ports.review(
             buildReviewRepairPrompt(review.rawOutput),
             reviewerAssignment,
@@ -1912,6 +1918,18 @@ export function standardRecordHash(record: StandardRunRecord): string {
 function leaseTtlMs(env: NodeJS.ProcessEnv): number {
   const parsed = Number.parseInt(env.ACM_RUN_LEASE_TTL_MS ?? "", 10);
   return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : 900_000;
+}
+
+function renewRunLease(
+  registry: FileRunRegistry,
+  lease: RegistryLease,
+  env: NodeJS.ProcessEnv,
+  now: () => string,
+): void {
+  registry.renewLease(lease, {
+    leaseTtlMs: leaseTtlMs(env),
+    now: now(),
+  });
 }
 
 function activeAttemptId(run: RunProjection): string {
