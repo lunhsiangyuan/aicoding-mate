@@ -259,6 +259,36 @@ describe("high-intensity CLI port", () => {
     expect(calls[0]?.args).toContain("gpt-5.6-sol-high");
     expect(calls.length).toBe(1);
   });
+
+  test("does not claim authoritative not_found when only the local receipt is absent", async () => {
+    const stateDir = mkdtempSync(
+      join(tmpdir(), "aicoding-mate-high-cli-missing-receipt-"),
+    );
+    const port = createHighIntensityCliPort({
+      cwd,
+      env: { ACM_STATE_DIR: stateDir },
+      now: () => "2026-07-31T02:00:00.000Z",
+      runner: recordingRunner([], ""),
+    });
+
+    const readback = await port.readBack({
+      assignment: authorAssignment,
+      prompt: "do the work",
+      contextId: "ctx-author-1",
+      phase: "author",
+      round: 1,
+      workflowDecisionId: "wfd_test",
+      decisionHash: "1".repeat(64),
+      stageId: "author",
+      idempotencyKey: "dispatch-without-local-receipt",
+    });
+
+    expect(readback).toEqual({
+      status: "mismatch",
+      checkedAt: "2026-07-31T02:00:00.000Z",
+      reason: "downstream_acceptance_unverifiable_local_receipt_absent",
+    });
+  });
 });
 
 function recordingRunner(

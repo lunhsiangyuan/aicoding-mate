@@ -160,17 +160,13 @@ export function createHighIntensityCliPort(
         };
       }
       const checkedAt = (options.now ?? (() => new Date().toISOString()))();
-      return existsSync(receiptPath)
-        ? {
-            status: "mismatch",
-            checkedAt,
-            reason: "model_dispatch_receipt_identity_or_content_mismatch",
-          }
-        : {
-            status: "not_found",
-            checkedAt,
-            reason: "model_dispatch_receipt_not_found",
-          };
+      return {
+        status: "mismatch",
+        checkedAt,
+        reason: existsSync(receiptPath)
+          ? "model_dispatch_receipt_identity_or_content_mismatch"
+          : "downstream_acceptance_unverifiable_local_receipt_absent",
+      };
     },
   };
 }
