@@ -257,10 +257,10 @@ export function resolveFirstmateAuthorityRoot(
 export function verifyFirstmateDecisionReceipt(
   decision: WorkflowDecisionEnvelope,
   receipt: FirstmateDecisionReceipt,
+  trustedAuthorityRoot: string,
 ): boolean {
-  const authorityRoot = resolve(dirname(receipt.receiptPath), "..");
   const authority = new FileFirstmateDecisionAuthority({
-    rootDir: authorityRoot,
+    rootDir: trustedAuthorityRoot,
   });
   return authority.readDecision(decision, receipt.receiptPath) !== undefined;
 }

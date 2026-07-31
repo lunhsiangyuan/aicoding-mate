@@ -17,6 +17,7 @@ import {
 } from "../authority/firstmate-decisions.ts";
 import {
   isFirstmateDecisionReceipt,
+  resolveFirstmateAuthorityRoot,
   verifyFirstmateDecisionReceipt,
   type FirstmateDecisionReceipt,
 } from "../authority/firstmate-decision-authority.ts";
@@ -179,6 +180,10 @@ export async function createHighIntensityRun(
   const now = options.now ?? (() => new Date().toISOString());
   const createdAt = now();
   const stateDir = resolve(options.stateDir);
+  const trustedAuthorityRoot = resolveFirstmateAuthorityRoot(
+    stateDir,
+    options.env,
+  );
   const provisionalId =
     `high-intensity-invalid-${compactTimestamp(createdAt)}-${randomUUID()}`;
   const provisional: HighIntensityRunRecord = {
@@ -283,7 +288,10 @@ export async function createHighIntensityRun(
 
   let lease: RegistryLease | null = null;
   if (opened.kind !== "created") {
-    const existing = readHighIntensityRunRecord(recordPath);
+    const existing = readHighIntensityRunRecord(
+      recordPath,
+      trustedAuthorityRoot,
+    );
     if (
       opened.kind === "coalesced_completed"
       && existing !== undefined
@@ -348,7 +356,7 @@ export async function createHighIntensityRun(
     }
   } else {
     lease = opened.lease;
-    writeHighIntensityRunRecord(base);
+    writeHighIntensityRunRecord(base, trustedAuthorityRoot);
   }
 
   if (lease === null) throw new Error("registry_lease_missing");
@@ -610,7 +618,7 @@ export async function createHighIntensityRun(
       coverage,
       adversarial,
       report,
-    });
+    }, trustedAuthorityRoot);
     registry.completeAttempt(lease, {
       readback: {
         status: "found",
@@ -635,10 +643,13 @@ export async function createHighIntensityRun(
 
 export function readHighIntensityRunRecord(
   path: string,
+  trustedAuthorityRoot = inferFirstmateAuthorityRootFromRecordPath(path),
 ): HighIntensityRunRecord | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return isHighIntensityRunRecord(value, path) ? value : undefined;
+    return isHighIntensityRunRecord(value, path, trustedAuthorityRoot)
+      ? value
+      : undefined;
   } catch {
     return undefined;
   }
@@ -1079,12 +1090,18 @@ function blockedRegistered(
 
 function writeHighIntensityRunRecord(
   record: HighIntensityRunRecord,
+  trustedAuthorityRoot = inferFirstmateAuthorityRootFromRecordPath(
+    record.recordPath,
+  ),
 ): HighIntensityRunRecord {
   mkdirSync(dirname(record.recordPath), { recursive: true });
   const temporary = `${record.recordPath}.tmp-${process.pid}-${randomUUID()}`;
   writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`);
   renameSync(temporary, record.recordPath);
-  const readBack = readHighIntensityRunRecord(record.recordPath);
+  const readBack = readHighIntensityRunRecord(
+    record.recordPath,
+    trustedAuthorityRoot,
+  );
   if (
     readBack === undefined
     || JSON.stringify(readBack) !== JSON.stringify(record)
@@ -1097,6 +1114,7 @@ function writeHighIntensityRunRecord(
 function isHighIntensityRunRecord(
   value: unknown,
   expectedPath: string,
+  trustedAuthorityRoot: string,
 ): value is HighIntensityRunRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -1135,6 +1153,7 @@ function isHighIntensityRunRecord(
       || !verifyFirstmateDecisionReceipt(
         record.workflowDecision,
         record.workflowDecisionReceipt,
+        trustedAuthorityRoot,
       )
       || record.authority.workflowAuthority !== "firstmate_verified"
     ) {
@@ -1317,4 +1336,8 @@ function releaseLeaseIfHeld(
 
 function fileSha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function inferFirstmateAuthorityRootFromRecordPath(path: string): string {
+  return resolveFirstmateAuthorityRoot(dirname(dirname(resolve(path))));
 }

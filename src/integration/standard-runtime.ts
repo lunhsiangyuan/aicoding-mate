@@ -21,6 +21,7 @@ import {
 } from "../authority/firstmate-decisions.ts";
 import {
   isFirstmateDecisionReceipt,
+  resolveFirstmateAuthorityRoot,
   verifyFirstmateDecisionReceipt,
   type FirstmateDecisionReceipt,
 } from "../authority/firstmate-decision-authority.ts";
@@ -221,6 +222,10 @@ export async function createStandardRun(
   const createdAt = now();
   const projectDir = resolve(options.projectDir ?? options.cwd);
   const stateDir = resolveStateDir(options.cwd, options.env);
+  const trustedAuthorityRoot = resolveFirstmateAuthorityRoot(
+    stateDir,
+    options.env,
+  );
   const availability =
     options.availability ?? probeStandardAvailability(options.cwd, options.env, now);
   const input: StandardWorkflowInput = {
@@ -318,7 +323,7 @@ export async function createStandardRun(
   const authorScopeBlocker = validateQuickTaskScope(authorTask, projectDir);
   if (authorScopeBlocker !== undefined) {
     return blocked(
-      { ...provisional, workflowDecision },
+      { ...provisional },
       now,
       `author_scope_invalid:${authorScopeBlocker}`,
     );
@@ -427,7 +432,7 @@ export async function createStandardRun(
   let reconciledRepair: StandardReviewOutcome | null = null;
 
   if (opened.kind !== "created") {
-    const existing = readStandardRunRecord(recordPath);
+    const existing = readStandardRunRecord(recordPath, trustedAuthorityRoot);
     if (
       opened.kind === "coalesced_completed"
       && existing !== undefined
@@ -506,7 +511,7 @@ export async function createStandardRun(
         readback: readBack,
         now: now(),
       });
-      writeStandardRecord(base);
+      writeStandardRecord(base, trustedAuthorityRoot);
     } else {
       releaseLeaseIfHeld(registry, lease);
       return {
@@ -644,7 +649,7 @@ export async function createStandardRun(
     }
   } else {
     lease = opened.lease;
-    writeStandardRecord(base);
+    writeStandardRecord(base, trustedAuthorityRoot);
   }
 
   if (lease === null) throw new Error("registry_lease_missing");
@@ -972,7 +977,7 @@ export async function createStandardRun(
         independentReviewCompleted: true,
         reportDecisionReady: true,
       },
-    });
+    }, trustedAuthorityRoot);
     registry.completeAttempt(lease, {
       readback: {
         status: "found",
@@ -1066,10 +1071,13 @@ export function renderStandardText(result: StandardRunResult): string {
 
 export function readStandardRunRecord(
   path: string,
+  trustedAuthorityRoot = inferFirstmateAuthorityRootFromRecordPath(path),
 ): StandardRunRecord | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return isStandardRunRecord(value, path) ? value : undefined;
+    return isStandardRunRecord(value, path, trustedAuthorityRoot)
+      ? value
+      : undefined;
   } catch {
     return undefined;
   }
@@ -1646,13 +1654,21 @@ function blocked(
   };
 }
 
-function writeStandardRecord(record: StandardRunRecord): StandardRunRecord {
+function writeStandardRecord(
+  record: StandardRunRecord,
+  trustedAuthorityRoot = inferFirstmateAuthorityRootFromRecordPath(
+    record.recordPath,
+  ),
+): StandardRunRecord {
   mkdirSync(dirname(record.recordPath), { recursive: true });
   const temporary = `${record.recordPath}.tmp-${process.pid}`;
   writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`);
   renameSync(temporary, record.recordPath);
   if (record.status !== "completed") return record;
-  const readBack = readStandardRunRecord(record.recordPath);
+  const readBack = readStandardRunRecord(
+    record.recordPath,
+    trustedAuthorityRoot,
+  );
   if (
     readBack === undefined
     || JSON.stringify(readBack) !== JSON.stringify(record)
@@ -1664,6 +1680,10 @@ function writeStandardRecord(record: StandardRunRecord): StandardRunRecord {
 
 function resolveStateDir(cwd: string, env: NodeJS.ProcessEnv): string {
   return resolve(env.ACM_STATE_DIR ?? join(cwd, "state", "aicoding-mate"));
+}
+
+function inferFirstmateAuthorityRootFromRecordPath(path: string): string {
+  return resolveFirstmateAuthorityRoot(dirname(dirname(resolve(path))));
 }
 
 function compactProcessFailure(
@@ -1712,6 +1732,7 @@ function compactTimestamp(value: string): string {
 function isStandardRunRecord(
   value: unknown,
   expectedPath: string,
+  trustedAuthorityRoot: string,
 ): value is StandardRunRecord {
   if (!isRecordValue(value)) {
     return false;
@@ -1755,6 +1776,7 @@ function isStandardRunRecord(
       || !verifyFirstmateDecisionReceipt(
         record.workflowDecision,
         record.workflowDecisionReceipt,
+        trustedAuthorityRoot,
       )
       || record.authority.workflowAuthority !== "firstmate_verified"
     ) {

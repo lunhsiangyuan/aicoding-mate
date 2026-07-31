@@ -33,7 +33,7 @@ describe("Firstmate decision authority", () => {
     expect(first.issuer).toBe("firstmate_control_plane");
     expect(first.signing.algorithm).toBe("Ed25519");
     expect(authority.readDecision(decision, first.receiptPath)).toEqual(first);
-    expect(verifyFirstmateDecisionReceipt(decision, first)).toBe(true);
+    expect(verifyFirstmateDecisionReceipt(decision, first, root)).toBe(true);
   });
 
   test("rejects a decision artifact changed after issuance", () => {
@@ -52,7 +52,33 @@ describe("Firstmate decision authority", () => {
     expect(
       authority.readDecision(decision, receipt.receiptPath),
     ).toBeUndefined();
-    expect(verifyFirstmateDecisionReceipt(decision, receipt)).toBe(false);
+    expect(verifyFirstmateDecisionReceipt(decision, receipt, root)).toBe(false);
+  });
+
+  test("rejects a valid self-signed receipt from an attacker-controlled alternate root", () => {
+    const trustedRoot = mkdtempSync(join(tmpdir(), "firstmate-authority-"));
+    const attackerRoot = mkdtempSync(join(tmpdir(), "firstmate-attacker-"));
+    const trustedAuthority = new FileFirstmateDecisionAuthority({
+      rootDir: trustedRoot,
+      now: () => "2026-07-31T01:00:00.000Z",
+    });
+    const attackerAuthority = new FileFirstmateDecisionAuthority({
+      rootDir: attackerRoot,
+      now: () => "2026-07-31T01:00:00.000Z",
+    });
+    const decision = createWorkflowDecisionEnvelope(decisionInput());
+    const trustedReceipt = trustedAuthority.issueDecision(decision);
+    const attackerReceipt = attackerAuthority.issueDecision(decision);
+
+    expect(
+      verifyFirstmateDecisionReceipt(decision, trustedReceipt, trustedRoot),
+    ).toBe(true);
+    expect(
+      attackerAuthority.readDecision(decision, attackerReceipt.receiptPath),
+    ).toEqual(attackerReceipt);
+    expect(
+      verifyFirstmateDecisionReceipt(decision, attackerReceipt, trustedRoot),
+    ).toBe(false);
   });
 
   test("rejects a receipt whose signature is changed", () => {

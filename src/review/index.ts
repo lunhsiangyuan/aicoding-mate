@@ -160,6 +160,7 @@ export interface ReviewCapsuleInput {
 
 export interface ReviewCapsulePorts {
   readonly appServer: CodexAppServerReviewPort;
+  readonly trustedAuthorityRoot: string;
 }
 
 export interface ReviewAnnotation {
@@ -309,7 +310,10 @@ export async function createReviewCapsule(
   input: ReviewCapsuleInput,
   ports: ReviewCapsulePorts,
 ): Promise<ReviewCapsuleResult> {
-  const validation = validateReviewCapsuleInput(input);
+  const validation = validateReviewCapsuleInput(
+    input,
+    ports.trustedAuthorityRoot,
+  );
   if (!validation.ok) return validation;
 
   const delivery = input.delivery ?? "detached";
@@ -466,12 +470,14 @@ export async function createReviewCapsule(
 
 function validateReviewCapsuleInput(
   input: ReviewCapsuleInput,
+  trustedAuthorityRoot: string,
 ): ReviewCapsuleResult | { readonly ok: true } {
   if (
     !isFirstmateDecisionReceipt(input.workflowDecisionReceipt)
     || !verifyFirstmateDecisionReceipt(
       input.workflowDecision,
       input.workflowDecisionReceipt,
+      trustedAuthorityRoot,
     )
   ) {
     return fail("firstmate_decision_receipt_invalid");

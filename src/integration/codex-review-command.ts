@@ -8,6 +8,7 @@ import {
 } from "../authority/firstmate-decisions.ts";
 import {
   isFirstmateDecisionReceipt,
+  resolveFirstmateAuthorityRoot,
   verifyFirstmateDecisionReceipt,
   type FirstmateDecisionReceipt,
 } from "../authority/firstmate-decision-authority.ts";
@@ -138,6 +139,10 @@ export async function runCodexReviewFromHerdrSelection(
 ): Promise<CodexReviewCommandResult> {
   const now = options.now ?? (() => new Date().toISOString());
   const stateDir = resolveStateDir(options.cwd, options.env);
+  const trustedAuthorityRoot = resolveFirstmateAuthorityRoot(
+    stateDir,
+    options.env,
+  );
   const basic = parseBasicHerdrSelection(options.contextJson);
   if (!basic.ok) return fail(basic.reason);
 
@@ -246,6 +251,7 @@ export async function runCodexReviewFromHerdrSelection(
       artifact.hash,
       opened.run.runId,
       dispatchKey,
+      trustedAuthorityRoot,
     );
     if (capsule === null) {
       return fail("canonical_review_requires_reconciliation");
@@ -297,6 +303,7 @@ export async function runCodexReviewFromHerdrSelection(
   try {
     const capsuleResult = await createReviewCapsule(capsuleInput, {
       appServer,
+      trustedAuthorityRoot,
     });
     if (!capsuleResult.ok) {
       markReviewUnknown(
@@ -332,6 +339,7 @@ export async function runCodexReviewFromHerdrSelection(
       capsuleHash,
       opened.run.runId,
       dispatchKey,
+      trustedAuthorityRoot,
     );
     if (
       capsuleReadBack === null
@@ -509,12 +517,13 @@ function readCompletedCapsule(
   expectedHash: string,
   expectedRunId: string,
   expectedIdempotencyKey: string,
+  trustedAuthorityRoot: string,
 ): ReviewCapsule | null {
   try {
     const contents = readFileSync(path, "utf8");
     if (sha256(contents) !== expectedHash) return null;
     const value: unknown = JSON.parse(contents);
-    if (!isReviewCapsule(value)) return null;
+    if (!isReviewCapsule(value, trustedAuthorityRoot)) return null;
     if (
       value.authority.canonicalRunId !== expectedRunId
       || value.authority.idempotencyKey !== expectedIdempotencyKey
@@ -527,7 +536,10 @@ function readCompletedCapsule(
   }
 }
 
-function isReviewCapsule(value: unknown): value is ReviewCapsule {
+function isReviewCapsule(
+  value: unknown,
+  trustedAuthorityRoot: string,
+): value is ReviewCapsule {
   if (!isRecord(value)) return false;
   if (
     value.capsuleVersion !== 1
@@ -551,6 +563,7 @@ function isReviewCapsule(value: unknown): value is ReviewCapsule {
       !verifyFirstmateDecisionReceipt(
         value.workflowDecision,
         value.workflowDecisionReceipt,
+        trustedAuthorityRoot,
       )
     ) {
       return false;

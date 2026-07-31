@@ -39,8 +39,11 @@ const workflowDecision = createFirstmateNativeReviewDecision({
     reason: "test reviewer",
   },
 });
+const workflowAuthorityRoot = mkdtempSync(
+  join(tmpdir(), "firstmate-review-authority-"),
+);
 const workflowDecisionReceipt = new FileFirstmateDecisionAuthority({
-  rootDir: mkdtempSync(join(tmpdir(), "firstmate-review-authority-")),
+  rootDir: workflowAuthorityRoot,
   now: () => "2026-07-30T19:59:00.000Z",
 }).issueDecision(workflowDecision);
 
@@ -130,11 +133,16 @@ function port(options: {
   };
 }
 
+function capsulePorts(options: Parameters<typeof port>[0] = {}) {
+  return {
+    appServer: port(options),
+    trustedAuthorityRoot: workflowAuthorityRoot,
+  };
+}
+
 describe("Codex Review Capsule core", () => {
   test("creates a text capsule after detached review read-back and exact deep-link construction", async () => {
-    const result = await createReviewCapsule(baseInput, {
-      appServer: port(),
-    });
+    const result = await createReviewCapsule(baseInput, capsulePorts());
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.reason);
@@ -166,8 +174,9 @@ describe("Codex Review Capsule core", () => {
   });
 
   test("preserves confirmed native annotations without requiring them for text round-trip", async () => {
-    const result = await createReviewCapsule(baseInput, {
-      appServer: port({
+    const result = await createReviewCapsule(
+      baseInput,
+      capsulePorts({
         read: readback({
           decision: null,
           nativeAnnotationExport: "confirmed",
@@ -182,7 +191,7 @@ describe("Codex Review Capsule core", () => {
           ],
         }),
       }),
-    });
+    );
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.reason);
@@ -207,12 +216,12 @@ describe("Codex Review Capsule core", () => {
     const paginatedCounters = { start: 0, read: 0 };
     const paginated = await createReviewCapsule(
       { ...baseInput, parentThreadReadState: "paginated" },
-      { appServer: port({ counters: paginatedCounters }) },
+      capsulePorts({ counters: paginatedCounters }),
     );
     const unknownCounters = { start: 0, read: 0 };
     const unknown = await createReviewCapsule(
       { ...baseInput, parentThreadReadState: "unknown" },
-      { appServer: port({ counters: unknownCounters }) },
+      capsulePorts({ counters: unknownCounters }),
     );
 
     expect(paginated).toEqual({
@@ -236,7 +245,7 @@ describe("Codex Review Capsule core", () => {
         ...baseInput,
         source: { ...baseInput.source, taskId: "task-other" },
       },
-      { appServer: port({ counters: taskMismatchCounters }) },
+      capsulePorts({ counters: taskMismatchCounters }),
     );
     const runMismatchCounters = { start: 0, read: 0 };
     const runMismatch = await createReviewCapsule(
@@ -244,7 +253,7 @@ describe("Codex Review Capsule core", () => {
         ...baseInput,
         source: { ...baseInput.source, runId: "run-other" },
       },
-      { appServer: port({ counters: runMismatchCounters }) },
+      capsulePorts({ counters: runMismatchCounters }),
     );
 
     expect(taskMismatch).toEqual({
@@ -262,17 +271,20 @@ describe("Codex Review Capsule core", () => {
   });
 
   test("fails closed on bad review ids and app-server read failures", async () => {
-    const badId = await createReviewCapsule(baseInput, {
-      appServer: port({ start: { reviewThreadId: "thread/review?bad" } }),
-    });
-    const missing = await createReviewCapsule(baseInput, {
-      appServer: port({
+    const badId = await createReviewCapsule(
+      baseInput,
+      capsulePorts({ start: { reviewThreadId: "thread/review?bad" } }),
+    );
+    const missing = await createReviewCapsule(
+      baseInput,
+      capsulePorts({
         read: { ok: false, reason: "thread_not_found" },
       }),
-    });
-    const unavailable = await createReviewCapsule(baseInput, {
-      appServer: port({ throwOnStart: true }),
-    });
+    );
+    const unavailable = await createReviewCapsule(
+      baseInput,
+      capsulePorts({ throwOnStart: true }),
+    );
 
     expect(badId).toEqual({
       ok: false,
@@ -293,21 +305,23 @@ describe("Codex Review Capsule core", () => {
 
   test("fails closed on empty or malformed source thread ids before read-back", async () => {
     const emptyCounters = { start: 0, read: 0 };
-    const emptySourceThread = await createReviewCapsule(baseInput, {
-      appServer: port({
+    const emptySourceThread = await createReviewCapsule(
+      baseInput,
+      capsulePorts({
         start: { sourceThreadId: "" },
         read: readback({ sourceThreadId: "" }),
         counters: emptyCounters,
       }),
-    });
+    );
     const malformedCounters = { start: 0, read: 0 };
-    const malformedSourceThread = await createReviewCapsule(baseInput, {
-      appServer: port({
+    const malformedSourceThread = await createReviewCapsule(
+      baseInput,
+      capsulePorts({
         start: { sourceThreadId: "thread/source?bad" },
         read: readback({ sourceThreadId: "thread/source?bad" }),
         counters: malformedCounters,
       }),
-    });
+    );
 
     expect(emptySourceThread).toEqual({
       ok: false,
@@ -324,17 +338,22 @@ describe("Codex Review Capsule core", () => {
   });
 
   test("requires read-back thread, source thread, and source lineage to match before return", async () => {
-    const wrongReviewThread = await createReviewCapsule(baseInput, {
-      appServer: port({ read: readback({ threadId: "thread-other" }) }),
-    });
-    const wrongSourceThread = await createReviewCapsule(baseInput, {
-      appServer: port({ read: readback({ sourceThreadId: "thread-source-2" }) }),
-    });
-    const wrongLineage = await createReviewCapsule(baseInput, {
-      appServer: port({
-        read: readback({ sourceLineageHash: sourceLineageHash({ ...lineage, runId: "run-2" }) }),
+    const wrongReviewThread = await createReviewCapsule(
+      baseInput,
+      capsulePorts({ read: readback({ threadId: "thread-other" }) }),
+    );
+    const wrongSourceThread = await createReviewCapsule(
+      baseInput,
+      capsulePorts({ read: readback({ sourceThreadId: "thread-source-2" }) }),
+    );
+    const wrongLineage = await createReviewCapsule(
+      baseInput,
+      capsulePorts({
+        read: readback({
+          sourceLineageHash: sourceLineageHash({ ...lineage, runId: "run-2" }),
+        }),
       }),
-    });
+    );
 
     expect(wrongReviewThread).toEqual({
       ok: false,

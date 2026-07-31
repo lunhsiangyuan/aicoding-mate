@@ -52,8 +52,11 @@ const exactAssignment = workflowDecision.roleAssignments.find(
 if (exactAssignment === undefined) {
   throw new Error("reviewer assignment missing");
 }
+const workflowAuthorityRoot = mkdtempSync(
+  join(tmpdir(), "firstmate-runtime-authority-"),
+);
 const workflowDecisionReceipt = new FileFirstmateDecisionAuthority({
-  rootDir: mkdtempSync(join(tmpdir(), "firstmate-runtime-authority-")),
+  rootDir: workflowAuthorityRoot,
   now: () => "2026-07-30T19:59:00.000Z",
 }).issueDecision(workflowDecision);
 
@@ -201,6 +204,7 @@ describe("Codex app-server review runtime", () => {
     try {
       const result = await createReviewCapsule(capsuleInput, {
         appServer: port,
+        trustedAuthorityRoot: workflowAuthorityRoot,
       });
 
       expect(result.ok).toBe(true);
