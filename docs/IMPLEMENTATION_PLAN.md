@@ -1,4 +1,4 @@
-# v0.2 實作計畫
+# AI Coding Mate 實作計畫
 
 這份計畫以使用者可觀察的行為為交付單位，不以「程式碼存在」當作完成。
 
@@ -178,3 +178,18 @@ Depends on：V2-01、V2-02（已實作）。
 - 新 v0.2 record 只在 decision／registry／artifact strict read-back 通過後標示 verified。
 - 舊的未簽章 decision record 保持不可驗證，不回填 `firstmate_verified`。
 - 證據封存在 [QA_EVIDENCE.md](QA_EVIDENCE.md)：Standard duplicate coalesce、原 decision reconciliation、Herdr worker/pane read-back、Codex task handoff 與 interrupted fail-closed；未完成的 real-surface lanes 明確列為未證明。
+
+## v0.3 單一入口
+
+### V3-01 Unified Mate console
+
+Status：implemented，等待 release-level Herdr surface evidence。
+
+交付：
+
+- `herdr-plugin.toml` 只保留一個一般主 pane：`mate`。
+- 純函式 slash parser 與 bounded context state。
+- `/quick`、`/standard`、`/expert`、`/research`、`/learn` 重用既有 workflows。
+- `/help`、`/status`、`/doctor`、`/quit` 控制指令。
+- `open --mode` 只設定同一 pane 的起始偏好。
+- 舊 direct recipe commands 保留給 automation，但不再作為一般使用導覽。

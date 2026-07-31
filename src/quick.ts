@@ -250,7 +250,7 @@ export function createQuickRun(options: QuickOptions): QuickResult {
 
   const preflight = preflightRuntime(firstmateRoot, projectDir, runtimeEnv);
   if (!baseRecord.source.paneId) {
-    preflight.push("Quick 必須從 Herdr pane 啟動；請執行 `aicoding-mate open --entrypoint quick`。");
+    preflight.push("Quick 必須從 Herdr pane 啟動；請執行 `aicoding-mate open`，再輸入 `/quick`。");
   } else if (!herdrHasPane(baseRecord.source.paneId, runtimeEnv, firstmateRoot)) {
     preflight.push(`來源 Herdr pane ${baseRecord.source.paneId} 不存在；拒絕在無法回傳結果的情況下派工。`);
   }
@@ -479,7 +479,7 @@ function observeQuickRun(
           ...record,
           status: "failed",
           updatedAt: now(),
-          blockers: ["來源 Herdr pane 已不存在，無法證明 Firstmate primary 與結果回傳路徑。請重新從 `aicoding-mate open --entrypoint quick` 啟動。"],
+          blockers: ["來源 Herdr pane 已不存在，無法證明 Firstmate primary 與結果回傳路徑。請重新執行 `aicoding-mate open`，再輸入 `/quick`。"],
         });
       }
       if (!paneVisible) {

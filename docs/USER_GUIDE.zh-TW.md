@@ -8,7 +8,7 @@ AI Coding Mate 是 Herdr 裡的一個架構控制入口：
 2. Firstmate 負責編排 Codex、Claude、Grok 等模型。
 3. 你先看到結論、影響與下一步；證據和技術細節留在第二層。
 
-v0.2 已啟用單一 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
+v0.3 只有一個 Herdr 主入口；Quick、Standard、Expert、Research 與 Learn 都在同一個 pane 內切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
 
 ## 安裝與從 Herdr 開啟
 
@@ -20,14 +20,17 @@ bun bin/aicoding-mate link
 bun bin/aicoding-mate open
 ```
 
-若要直接進入某個工作面：
+若希望開啟時先選好模式：
 
 ```bash
-bun bin/aicoding-mate open --entrypoint quick
-bun bin/aicoding-mate open --entrypoint standard
-bun bin/aicoding-mate open --entrypoint adversarial
-bun bin/aicoding-mate open --entrypoint research
+bun bin/aicoding-mate open --mode quick
+bun bin/aicoding-mate open --mode standard
+bun bin/aicoding-mate open --mode expert
+bun bin/aicoding-mate open --mode research
+bun bin/aicoding-mate open --mode learn
 ```
+
+這五個指令都開啟同一個 `AI Coding Mate` pane，只改變初始模式。
 
 第一次使用 Firstmate 前：
 
@@ -35,24 +38,41 @@ bun bin/aicoding-mate open --entrypoint research
 bun bin/aicoding-mate bootstrap-firstmate
 ```
 
-## 我該選哪一個入口
+## 我該選哪一個模式
 
-| 入口 | 何時使用 | 你會先看到什麼 |
+| 模式 | 何時使用 | 你會先看到什麼 |
 | --- | --- | --- |
 | Quick | 小型唯讀檢查、搜尋、摘要、解釋 | 任務摘要與真實 worker/read-back 狀態 |
 | Standard | 一般架構或功能設計 | Firstmate/Codex 方案與跨模型 review |
-| Adversarial | 高風險架構、需要找反例 | Author、Challenger、Judge 收斂後的結論 |
+| Expert | 高風險架構、需要找反例 | Author、Challenger、Judge 收斂後的結論 |
 | Research | 想先廣搜、避免漏掉候選 | recall-first 結論、coverage 與 evidence path |
+| Learn | 想先懂大意，再決定是否深入 | 白話簡介與目前真正需要懂的少量概念 |
 | Context Branch | 想理解畫面中選取的文字 | 白話簡介，可選深入，再帶回主任務 |
 | Codex Review | 想用 Codex 原生 review 介面批註 | 新的 Codex review task 與回傳 capsule |
 
+## Slash commands
+
+開啟 pane 後可使用：
+
+```text
+/quick [任務]     切換 Quick；若有任務就立即執行
+/standard [任務]  切換 Standard
+/expert [任務]    切換 Expert
+/research [任務]  切換 Research
+/learn [內容]     切換 Learn
+/status           顯示目前模式與 context 輪數
+/doctor           檢查 Herdr、Firstmate 與模型 runtime
+/help             顯示指令
+/quit             離開
+```
+
+只輸入 `/expert` 會切換模式，不會派工；之後直接輸入文字即可。輸入 `/expert 找出這個方案的反例` 則會切換並立刻執行。
+
+同一 pane 會保留最近四輪摘要作為畫面內的短期 continuity。系統把本輪 `currentTask` 和歷史 `continuityContext` 分開：只有本輪文字會進入 Firstmate decision、scope gate、run identity 與 worker。舊回合不會被暗中當成新指令；如果新任務確實需要沿用某項決策，請在本輪用一句話複誦，或用 Context Branch 經確認後帶回。關閉 pane 後不保留這段短期 continuity；正式 run、evidence 與 lineage 仍在 Run Registry。
+
 ## Quick
 
-從 Herdr 開啟：
-
-```bash
-bun bin/aicoding-mate open --entrypoint quick
-```
+在 pane 輸入 `/quick`。
 
 輸入一個明確唯讀任務，例如：
 
@@ -69,17 +89,13 @@ Quick 只有在以下四件事都被實際讀回後才算完成：
 
 ## Standard
 
-```bash
-bun bin/aicoding-mate open --entrypoint standard
-```
+在 pane 輸入 `/standard`。
 
 你只需要描述目標與邊界。系統會先由 Firstmate/Codex 形成方案，再由不同模型家族 review。若 Claude/Fable 被顯式停用，報告會清楚標示同家族 fallback，不會假裝已完成跨模型 review。
 
-## Adversarial
+## Expert
 
-```bash
-bun bin/aicoding-mate open --entrypoint adversarial
-```
+在 pane 輸入 `/expert`。Expert 的底層 recipe 名稱仍是 `adversarial`，因此既有 CLI automation 與 durable record 名稱不變。
 
 適合「選錯會有明顯代價」的架構決策。預設角色：
 
@@ -99,9 +115,7 @@ bun bin/aicoding-mate adversarial \
 
 ## Research
 
-```bash
-bun bin/aicoding-mate open --entrypoint research
-```
+在 pane 輸入 `/research`。
 
 Research 會保留 discovery denominator，並把內容區分為：
 
@@ -111,6 +125,16 @@ Research 會保留 discovery denominator，並把內容區分為：
 - 未知
 
 主畫面只顯示結論、影響、下一步與 evidence 路徑。完整來源、coverage、模型輸出與 lineage 留在 JSON record。
+
+## Learn
+
+在 pane 輸入 `/learn`，再貼上數字、文字或概念；也可以直接輸入：
+
+```text
+/learn 什麼是 idempotency？它為什麼和這個控制平面有關？
+```
+
+Learn 會先給短簡介，再列出本輪問題真正需要理解的少量技術概念。它重用 Standard workflow 與 review，不另建低可信度的簡化 runtime。若想深入，直接在同一 pane 追問；需要引用前輪某項決策時，在新問題中簡短複誦即可。
 
 ## Context Branch
 

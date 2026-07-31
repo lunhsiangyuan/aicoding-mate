@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { runDoctor } from "./probe.ts";
 import { resolveFirstmateAuthorityRoot } from "./authority/firstmate-decision-authority.ts";
-import { renderDoctorText, renderPane } from "./render.ts";
+import { renderDoctorText } from "./render.ts";
 import {
   bootstrapFirstmate,
   createQuickRun,
@@ -46,6 +46,18 @@ import {
   readHighIntensityRunRecord,
 } from "./integration/high-intensity-runtime.ts";
 import { runCodexReviewFromHerdrSelection } from "./integration/codex-review-command.ts";
+import {
+  buildMateRuntimeRequest,
+  containsMateEnvelopeMarker,
+  createMateConsoleState,
+  parseMateConsoleInput,
+  recordMateConsoleTurn,
+  renderMateConsoleHelp,
+  renderMateConsoleStatus,
+  summarizeMateOutput,
+  type MateMode,
+  type MateRuntimeRequest,
+} from "./mate-console.ts";
 import type { SourceLineage } from "./contracts/index.ts";
 
 export interface CliIO {
@@ -72,22 +84,11 @@ export async function main(args: string[], io: CliIO): Promise<number> {
         return await runPaneCommand(args.slice(1), io);
       case "quick":
         return await runQuickCommand(args.slice(1), io);
-      case "quick-pane":
-        return await runQuickPaneCommand(args.slice(1), io);
       case "standard":
         return await runStandardCommand(args.slice(1), io);
-      case "standard-pane":
-        return await runStandardPaneCommand(args.slice(1), io);
       case "adversarial":
       case "research":
         return await runHighIntensityCommand(command, args.slice(1), io);
-      case "adversarial-pane":
-      case "research-pane":
-        return await runHighIntensityPaneCommand(
-          command === "adversarial-pane" ? "adversarial" : "research",
-          args.slice(1),
-          io,
-        );
       case "context-branch-start":
         return runContextBranchStartCommand(args.slice(1), io);
       case "codex-review-start":
@@ -198,12 +199,18 @@ async function runContextBranchPaneCommand(
     return 1;
   }
 
-  const exitCode = await conductContextBranchConversation(
-    resolve(branchPath),
-    original,
-    askPaneLine,
-    io,
-  );
+  const lineReader = createPaneLineReader();
+  let exitCode: number;
+  try {
+    exitCode = await conductContextBranchConversation(
+      resolve(branchPath),
+      original,
+      lineReader.read,
+      io,
+    );
+  } finally {
+    lineReader.close();
+  }
   if (io.env.HERDR_ENV === "1" && io.env.ACM_PANE_ONCE !== "1") {
     io.stdout.write(
       "\nContext Branch pane 保持開啟，方便檢查回送結果；關閉此 pane 即可離開。\n",
@@ -360,38 +367,6 @@ async function runStandardCommand(
   return 0;
 }
 
-async function runStandardPaneCommand(
-  args: string[],
-  io: CliIO,
-): Promise<number> {
-  if (args.length > 0) {
-    io.stderr.write(`standard-pane 不支援額外參數: ${args.join(" ")}\n`);
-    return 2;
-  }
-  const reviewDescription = io.env.ACM_CLAUDE_REVIEW_DISABLED === "1"
-    ? "再由 Codex 進行顯式同家族降級 review"
-    : "再交給 Claude 獨立跨模型 review";
-  io.stdout.write(
-    "AI Coding Mate Standard\n"
-      + "請描述目標與邊界；系統會由 Firstmate/Codex 產出架構方案，"
-      + reviewDescription
-      + "：\n> ",
-  );
-  const task = (await askPaneLine()).trim();
-  if (!task) {
-    io.stderr.write("任務不可為空。\n");
-    return 2;
-  }
-  const exitCode = await runStandardCommand(["--task", task], io);
-  if (io.env.HERDR_ENV === "1" && io.env.ACM_PANE_ONCE !== "1") {
-    io.stdout.write(
-      "\nStandard pane 保持開啟，方便回讀報告；關閉此 pane 即可離開。\n",
-    );
-    await keepPaneOpen();
-  }
-  return exitCode;
-}
-
 type HighIntensityRecipe = "adversarial" | "research";
 
 const defaultHighIntensityQuestions = [
@@ -480,34 +455,6 @@ function highIntensitySource(
   };
 }
 
-async function runHighIntensityPaneCommand(
-  recipe: HighIntensityRecipe,
-  args: string[],
-  io: CliIO,
-): Promise<number> {
-  if (args.length > 0) {
-    io.stderr.write(`${recipe}-pane 不支援額外參數: ${args.join(" ")}\n`);
-    return 2;
-  }
-  io.stdout.write(
-    `${recipe === "adversarial" ? "AI Coding Mate Adversarial" : "AI Coding Mate Research"}\n`
-      + "請用自然語言描述你要做的架構判斷；技術子問題由 Firstmate 自動整理：\n> ",
-  );
-  const task = (await askPaneLine()).trim();
-  if (!task) {
-    io.stderr.write("任務不可為空。\n");
-    return 2;
-  }
-  const exitCode = await runHighIntensityCommand(recipe, ["--task", task], io);
-  if (io.env.HERDR_ENV === "1" && io.env.ACM_PANE_ONCE !== "1") {
-    io.stdout.write(
-      "\n報告已留在 pane；完整證據與模型辯論可由 evidence 路徑展開。關閉 pane 即可離開。\n",
-    );
-    await keepPaneOpen();
-  }
-  return exitCode;
-}
-
 function parseHighIntensityInput(
   recipe: HighIntensityRecipe,
   args: string[],
@@ -547,6 +494,10 @@ function parseHighIntensityInput(
     io.stderr.write(`${recipe} 需要任務文字。\n`);
     return { ok: false };
   }
+  if (containsMateEnvelopeMarker(task)) {
+    io.stderr.write(`${recipe} 的任務包含保留的 Mate context marker。\n`);
+    return { ok: false };
+  }
   const selectedQuestions = questions.filter((question) => question.length > 0);
   return {
     ok: true,
@@ -565,7 +516,10 @@ function stateDir(io: CliIO): string {
     : resolve(io.cwd, "state", "aicoding-mate");
 }
 
-async function runQuickCommand(args: string[], io: CliIO): Promise<number> {
+async function runQuickCommand(
+  args: string[],
+  io: CliIO,
+): Promise<number> {
   const parsed = parseTaskAndProject("quick", args, io);
   if (!parsed.ok) return 2;
   const result = createQuickRun({
@@ -647,26 +601,11 @@ function parseTaskAndProject(
     );
     return { ok: false };
   }
+  if (containsMateEnvelopeMarker(task)) {
+    io.stderr.write(`${command} 的任務包含保留的 Mate context marker。\n`);
+    return { ok: false };
+  }
   return { ok: true, task, projectDir };
-}
-
-async function runQuickPaneCommand(args: string[], io: CliIO): Promise<number> {
-  if (args.length > 0) {
-    io.stderr.write(`quick-pane 不支援額外參數: ${args.join(" ")}\n`);
-    return 2;
-  }
-  io.stdout.write("AI Coding Mate Quick\n請輸入一個明確唯讀的檢查、搜尋、摘要、解釋或 review 任務：\n> ");
-  const task = (await askPaneLine()).trim();
-  if (!task) {
-    io.stderr.write("任務不可為空。\n");
-    return 2;
-  }
-  const exitCode = await runQuickCommand(["--task", task], io);
-  if (io.env.HERDR_ENV === "1" && io.env.ACM_PANE_ONCE !== "1") {
-    io.stdout.write("\nQuick pane 保持開啟，方便回讀結果；關閉此 pane 即可離開。\n");
-    await keepPaneOpen();
-  }
-  return exitCode;
 }
 
 function runBootstrapFirstmateCommand(args: string[], io: CliIO): number {
@@ -766,13 +705,167 @@ async function runPaneCommand(args: string[], io: CliIO): Promise<number> {
     io.stderr.write(`pane 不支援額外參數: ${args.join(" ")}\n`);
     return 2;
   }
-  const report = runDoctor({ cwd: io.cwd, env: io.env });
-  io.stdout.write(renderPane(report));
-  if (io.env.HERDR_ENV === "1" && io.env.ACM_PANE_ONCE !== "1") {
-    io.stdout.write("\nHerdr pane 保持開啟中；關閉此 pane 即可結束診斷面。\n");
-    await keepPaneOpen();
+  const lineReader = createPaneLineReader();
+  try {
+    return await conductMateConsole(io, lineReader.read);
+  } finally {
+    lineReader.close();
   }
-  return 0;
+}
+
+export async function conductMateConsole(
+  io: CliIO,
+  question: () => Promise<string>,
+  dispatch: (
+    mode: MateMode,
+    request: MateRuntimeRequest,
+    io: CliIO,
+  ) => Promise<number> = dispatchMateTask,
+): Promise<number> {
+  let state = createMateConsoleState(io.env.ACM_INITIAL_MODE);
+  const once = io.env.ACM_PANE_ONCE === "1";
+  io.stdout.write(
+    "AI Coding Mate\n"
+      + `目前模式：${state.mode}。直接輸入需求，或輸入 /help 查看切換方式。\n`,
+  );
+
+  while (true) {
+    io.stdout.write(`\n[${state.mode}] > `);
+    let input: string;
+    try {
+      input = await question();
+    } catch (error) {
+      if (
+        error instanceof Error
+        && ["pane_input_closed", "pane_input_cancelled"].includes(error.message)
+      ) {
+        io.stdout.write("\nAI Coding Mate 已離開。\n");
+        return 0;
+      }
+      throw error;
+    }
+
+    const action = parseMateConsoleInput(state, input);
+    state = action.state;
+    if (action.kind === "quit") {
+      io.stdout.write("AI Coding Mate 已離開。\n");
+      return 0;
+    }
+    if (action.kind === "noop") {
+      if (once) return 0;
+      continue;
+    }
+    if (action.kind === "help") {
+      io.stdout.write(`${renderMateConsoleHelp()}\n`);
+      if (once) return 0;
+      continue;
+    }
+    if (action.kind === "status") {
+      io.stdout.write(`${renderMateConsoleStatus(state)}\n`);
+      if (once) return 0;
+      continue;
+    }
+    if (action.kind === "doctor") {
+      const report = runDoctor({ cwd: io.cwd, env: io.env });
+      io.stdout.write(renderDoctorText(report));
+      if (once) return report.summary.ready ? 0 : 1;
+      continue;
+    }
+    if (action.kind === "error") {
+      io.stderr.write(`${action.message}。輸入 /help 查看可用指令。\n`);
+      if (once) return 2;
+      continue;
+    }
+    if (action.kind === "mode_changed") {
+      io.stdout.write(
+        `已切換到 ${state.mode}；接著直接輸入需求即可。\n`,
+      );
+      if (once) return 0;
+      continue;
+    }
+
+    const captured = captureMateOutput(io);
+    const request = buildMateRuntimeRequest(state, action.mode, action.task);
+    let exitCode: number;
+    try {
+      exitCode = await dispatch(
+        action.mode,
+        request,
+        captured.io,
+      );
+    } catch (error) {
+      exitCode = 1;
+      io.stderr.write(
+        `本輪執行失敗：${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+    const summary = summarizeMateOutput(captured.read());
+    state = recordMateConsoleTurn(
+      state,
+      action.task,
+      exitCode === 0 ? summary : `未完成：${summary}`,
+    );
+    io.stdout.write(
+      `\n已保留本次摘要供同一 pane 繼續追問；${renderMateConsoleStatus(state)}\n`,
+    );
+    if (once) return exitCode;
+  }
+}
+
+export interface MateWorkflowRunners {
+  readonly quick: (task: string, io: CliIO) => Promise<number>;
+  readonly standard: (task: string, io: CliIO) => Promise<number>;
+  readonly highIntensity: (
+    recipe: HighIntensityRecipe,
+    task: string,
+    io: CliIO,
+  ) => Promise<number>;
+}
+
+const defaultMateWorkflowRunners: MateWorkflowRunners = {
+  quick: async (task, io) => await runQuickCommand(["--task", task], io),
+  standard: async (task, io) =>
+    await runStandardCommand(["--task", task], io),
+  highIntensity: async (recipe, task, io) =>
+    await runHighIntensityCommand(recipe, ["--task", task], io),
+};
+
+export async function dispatchMateTask(
+  mode: MateMode,
+  request: MateRuntimeRequest,
+  io: CliIO,
+  runners: MateWorkflowRunners = defaultMateWorkflowRunners,
+): Promise<number> {
+  const task = request.currentTask;
+  if (mode === "quick") {
+    return await runners.quick(task, io);
+  }
+  if (mode === "expert") {
+    return await runners.highIntensity("adversarial", task, io);
+  }
+  if (mode === "research") {
+    return await runners.highIntensity("research", task, io);
+  }
+  return await runners.standard(task, io);
+}
+
+function captureMateOutput(io: CliIO): {
+  readonly io: CliIO;
+  readonly read: () => string;
+} {
+  let output = "";
+  return {
+    io: {
+      ...io,
+      stdout: {
+        write: (chunk: string) => {
+          output += chunk;
+          return io.stdout.write(chunk);
+        },
+      },
+    },
+    read: () => output,
+  };
 }
 
 function runInstallCommand(args: string[], io: CliIO): number {
@@ -825,7 +918,7 @@ function runLinkCommand(args: string[], io: CliIO): number {
 function runOpenCommand(args: string[], io: CliIO): number {
   let placement = "tab";
   let focus = true;
-  let entrypoint = "doctor";
+  let mode: MateMode = "standard";
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--placement") {
@@ -836,25 +929,21 @@ function runOpenCommand(args: string[], io: CliIO): number {
       }
       placement = value;
       index += 1;
-    } else if (arg === "--entrypoint") {
+    } else if (arg === "--mode") {
       const value = args[index + 1];
+      const parsed = createMateConsoleState(value);
       if (
-        !value ||
-        ![
-          "doctor",
-          "quick",
-          "standard",
-          "adversarial",
-          "research",
-          "context-branch",
-        ].includes(value)
+        !value
+        || !["quick", "standard", "expert", "research", "learn"].includes(
+          value.toLowerCase(),
+        )
       ) {
         io.stderr.write(
-          "open 的 --entrypoint 必須是 doctor|quick|standard|adversarial|research|context-branch。\n",
+          "open 的 --mode 必須是 quick|standard|expert|research|learn。\n",
         );
         return 2;
       }
-      entrypoint = value;
+      mode = parsed.mode;
       index += 1;
     } else if (arg === "--no-focus") {
       focus = false;
@@ -871,11 +960,13 @@ function runOpenCommand(args: string[], io: CliIO): number {
     "--plugin",
     pluginId,
     "--entrypoint",
-    entrypoint,
+    "mate",
     "--placement",
     placement,
     "--env",
     "ACM_OPENED_BY=aicoding-mate",
+    "--env",
+    `ACM_INITIAL_MODE=${mode}`,
     focus ? "--focus" : "--no-focus",
   ];
   const result = spawnSync(herdr, openArgs, {
@@ -903,9 +994,11 @@ function helpText(): string {
 用法:
   aicoding-mate install
   aicoding-mate link [--disabled]
-  aicoding-mate open [--entrypoint doctor|quick|standard|adversarial|research|context-branch] [--placement overlay|popup|split|tab|zoomed] [--no-focus]
+  aicoding-mate open [--mode quick|standard|expert|research|learn] [--placement overlay|popup|split|tab|zoomed] [--no-focus]
   aicoding-mate doctor [--json]
   aicoding-mate bootstrap-firstmate
+
+進階／automation:
   aicoding-mate quick --task "小型任務" [--project <git-root>]
   aicoding-mate standard --task "架構目標" [--project <git-root>]
   aicoding-mate adversarial --task "高風險架構判斷" [--question "子問題"] [--project <git-root>]
@@ -918,7 +1011,7 @@ function helpText(): string {
 說明:
   install  安裝 Bun dependencies。
   link     將目前工作目錄註冊成 Herdr local plugin。
-  open     從 Herdr 開啟 AI Coding Mate 診斷 pane。
+  open     從 Herdr 開啟單一 AI Coding Mate pane；在 pane 內用 slash command 切換模式。
   doctor   從 runtime 實際讀回 Herdr、Firstmate、Codex、Claude、git、gh、jq、Bun 狀態。
   bootstrap-firstmate 取得 pinned Firstmate distro 並建立隔離 FM_HOME。
   quick    啟動 Firstmate-on-Herdr Quick run；四項 read-back 缺一就 fail closed。
@@ -928,7 +1021,7 @@ function helpText(): string {
   context-branch-start 從 Herdr 選取內容建立同 lineage 分支，複誦確認後送回來源任務。
   codex-review-start 從 Herdr 選取內容建立 detached Codex review；UI request 與 review 完成狀態分開回報。
   read-run 驗證受簽章的 managed record；Quick 歷史 record 只供閱讀，不標示 verified。
-  pane     Herdr plugin pane entrypoint，輸出可讀診斷面。
+  pane     Herdr plugin 單一互動入口；支援 /quick、/standard、/expert、/research、/learn。
 `;
 }
 
@@ -944,19 +1037,33 @@ function keepPaneOpen(): Promise<void> {
   });
 }
 
-async function askPaneLine(): Promise<string> {
+function createPaneLineReader(): {
+  readonly read: () => Promise<string>;
+  readonly close: () => void;
+} {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
     const prompt = createInterface({
       input: process.stdin,
       output: process.stdout,
     });
-    try {
-      return await prompt.question("");
-    } finally {
-      prompt.close();
-    }
+    const lines = prompt[Symbol.asyncIterator]();
+    return {
+      read: async () => {
+        const next = await lines.next();
+        if (next.done) throw new Error("pane_input_closed");
+        return next.value;
+      },
+      close: () => prompt.close(),
+    };
   }
 
+  return {
+    read: readTtyPaneLine,
+    close: () => undefined,
+  };
+}
+
+async function readTtyPaneLine(): Promise<string> {
   const input = process.stdin;
   const wasRaw = input.isRaw;
   return await new Promise<string>((resolveLine, rejectLine) => {

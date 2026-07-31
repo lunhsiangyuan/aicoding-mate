@@ -1,6 +1,6 @@
 {
   "name": "aicoding-mate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Firstmate workflow and runtime authority control layer for Herdr.",
   "type": "module",
   "bin": {

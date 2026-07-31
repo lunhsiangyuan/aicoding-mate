@@ -1,6 +1,52 @@
-# AI Coding Mate v0.2 QA Evidence
+# AI Coding Mate QA Evidence
 
 本文件保存 2026-07-31 在 macOS、Herdr 與 Codex Desktop 的實機 gate。它區分「已證明」「部分成功」「未證明」，不以測試綠燈或 task 曾啟動取代 runtime read-back。
+
+## v0.3 單一入口增量 gate
+
+2026-07-31 重新 link local plugin 後，Herdr `plugin list` 讀回：
+
+- plugin version：`0.3.0`
+- 一般主 pane：只有 `mate`
+- 輔助 pane：`context-branch`，只能由 selection action 使用
+- 主 pane command：`bun bin/aicoding-mate pane`
+
+真實 Herdr surface：
+
+- `aicoding-mate open --mode standard --placement tab` exit 0。
+- Herdr 回報 entrypoint `mate`、最終 pane `w1N:p9`、label `AI Coding Mate`。
+- `herdr pane read w1N:p9` 讀回 `目前模式：standard` 與互動 prompt。
+- 輸入 `/help` 後讀回五個模式與四個控制指令。
+- 輸入 `/expert` 後 prompt 由 `[standard]` 變成 `[expert]`。
+- 輸入 `/status` 後讀回 `mode=expert completed_turns=0 context_turns=0`。
+- 輸入未知 `/wat` 後讀回明確錯誤，模式仍為 Expert，沒有派工。
+
+Automated gate：
+
+- `bun test`：183 pass、0 fail、853 assertions。
+- `bun run typecheck`：exit 0。
+- CLI argv boundary test 證明 `open --mode expert` 呼叫 Herdr `--entrypoint mate` 並傳入 `ACM_INITIAL_MODE=expert`。
+- console state tests 覆蓋 inline slash task、Learn progressive disclosure、最近四輪 context 上限、結構化 `ui_continuity_only` metadata 與輸出摘要。
+- dispatch regression 直接截取第二輪 payload，證明前輪 request 只在 `continuityContext`，不在 worker 收到的 `currentTask`。
+- routing regression 直接呼叫真實 `dispatchMateTask`，證明 Quick／Standard／Expert→Adversarial／Research／Learn→Standard 的對應。
+- scope regression 證明本輪危險 request 仍會被 Quick／Standard gate 阻擋；歷史內容不再靠 lexical 例外略過，而是根本不進入 worker task。
+- non-TTY multi-line session、保留 marker 拒絕與 per-turn dispatcher exception recovery 都有 CLI regression。
+
+本次增量 gate 沒有為了測試入口而觸發新的付費模型任務。它證明 unified pane、slash controls 與 Herdr wiring；Standard／Adversarial／Research 的 workflow runtime evidence 邊界仍以下列 v0.2 記錄為準。
+
+### v0.3 review gate
+
+- standards review：GO，無剩餘 P0／P1／P2。
+- authority/spec review：初次指出歷史 context 仍會進入 worker；改成結構化 `currentTask`／`continuityContext` 且只 dispatch 前者後，re-review GO。
+- Claude Fable review：初次指出 mode→workflow routing 缺少真實 dispatcher regression；補測並移除舊 `*-pane` 入口後，新對話 re-review 回覆 `GO`。
+
+### v0.3 debugging hypotheses
+
+| 假設 | runtime 證據 | 判定 |
+| --- | --- | --- |
+| `open --mode expert` 仍會開舊 Adversarial pane | CLI argv regression 與 Herdr open receipt 都顯示 entrypoint `mate`；manifest 無 Adversarial pane | 否 |
+| 只輸入 `/expert` 會暗中派出模型 | 切換後 `/status` 為 `completed_turns=0 context_turns=0`；`process-info` 只有 `bun bin/aicoding-mate pane` | 否 |
+| 未知 `/wat` 會重設模式或落入一般任務派工 | `/wat` 前後兩次 `/status` 都是 Expert、0 completed、0 context；畫面只回報未知指令 | 否 |
 
 ## Release snapshot
 

@@ -9,8 +9,15 @@ import {
   markRunPresented,
   quickWorkflowExecutionMatches,
   readRunRecord,
+  validateQuickTaskScope,
   verifyPaneRecordConsistency,
+  wrapStandardReadOnlyTask,
 } from "../src/quick.ts";
+import {
+  buildMateRuntimeRequest,
+  createMateConsoleState,
+  recordMateConsoleTurn,
+} from "../src/mate-console.ts";
 
 function fakeBin(dir: string, name: string, body: string) {
   const path = join(dir, name);
@@ -61,6 +68,46 @@ function makePinnedFirstmate(root: string) {
 }
 
 describe("quick workflow", () => {
+  test("validates only the current Mate request because continuity never enters the worker task", () => {
+    let state = createMateConsoleState("standard");
+    state = recordMateConsoleTurn(
+      state,
+      "分析部署架構",
+      "建議建立單一入口並更新說明。",
+    );
+    const safeQuick = buildMateRuntimeRequest(
+      state,
+      "quick",
+      "檢查 README 並摘要目前入口",
+    );
+    expect(safeQuick.continuityContext.turns[0]?.request).toBe("分析部署架構");
+    expect(safeQuick.currentTask).not.toContain("分析部署架構");
+    expect(
+      validateQuickTaskScope(safeQuick.currentTask, process.cwd()),
+    ).toBeUndefined();
+    expect(
+      validateQuickTaskScope(
+        wrapStandardReadOnlyTask(safeQuick.currentTask),
+        process.cwd(),
+      ),
+    ).toBeUndefined();
+
+    const unsafeQuick = buildMateRuntimeRequest(
+      state,
+      "quick",
+      "deploy this repository",
+    );
+    expect(validateQuickTaskScope(unsafeQuick.currentTask, process.cwd())).toContain(
+      "高風險或敏感意圖",
+    );
+    expect(
+      validateQuickTaskScope(
+        wrapStandardReadOnlyTask(unsafeQuick.currentTask),
+        process.cwd(),
+      ),
+    ).toContain("原始目標包含可執行動作");
+  });
+
   test("fails closed before claiming dispatch when Firstmate is missing", () => {
     const dir = mkdtempSync(join(tmpdir(), "acm-quick-missing-"));
     try {

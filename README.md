@@ -2,7 +2,7 @@
 
 AI Coding Mate 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目標、優先順序與不能碰的邊界；系統負責把技術工作交給 Firstmate、Herdr 與不同模型，並把結果整理成能直接閱讀的報告。
 
-> 目前狀態：v0.2 已把 Firstmate Workflow Authority 與 canonical Run Registry 接到 Standard、Adversarial、Research 與 Codex native review。Quick 是 Firstmate 的下游執行 primitive，接受同一 idempotency key；Context Branch 則維持一次性、可稽核的回傳通道，不取得 workflow 決策權。
+> 目前狀態：v0.3 將一般使用流程收斂到一個 Herdr `AI Coding Mate` pane，並以 `/quick`、`/standard`、`/expert`、`/research`、`/learn` 切換。底層沿用 v0.2 的 Firstmate Workflow Authority 與 canonical Run Registry；slash command 只表達使用者偏好，不取得派工權。
 
 ## 它要解決什麼
 
@@ -19,7 +19,8 @@ AI Coding Mate 的預設方向相反：先追求完整涵蓋，再標示證據�
 
 ```mermaid
 flowchart TD
-    U["使用者<br/>目標、優先順序、產品邊界"] --> A["Architect-mode Firstmate<br/>解釋、編排、複誦"]
+    U["使用者<br/>目標、優先順序、產品邊界"] --> P["單一 AI Coding Mate pane<br/>slash mode + local bounded continuity"]
+    P --> A["Architect-mode Firstmate<br/>解釋、編排、複誦"]
     A --> W["Workflow Engine<br/>固定流程、動態派工"]
     W --> H["Herdr<br/>可見執行、隔離與監督"]
     H --> M["Codex／Claude／Cursor／Gemini"]
@@ -42,11 +43,12 @@ AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herd
 - 高風險任務採跨模型 adversarial review；小任務單次 review 或抽查。
 - 報告使用 recall-first 雙層格式，另設 Coverage Review 找出遺漏。
 - 選取文字後可開啟 Context Branch，先白話說明，再按需深入。
+- `/learn` 在同一個 pane 先給白話簡介，再依追問展開技術層；不另建一套 workflow。
 - Branch 內容可帶回原主對話，由主對話判斷新增或修改任務並複誦。
 - `Open in Codex Review` 由 Herdr 建立 Codex 原生 review task；只有同一 review turn 完成並可讀回時才產生 Review Capsule。
 - 沿用既有 Claude Code／Codex skills 與 adapters，不改寫內部 prompt。
 
-先從 [繁體中文使用說明](docs/USER_GUIDE.zh-TW.md) 開始。完整需求見 [產品規格](docs/SPEC.md)，系統邊界見 [架構說明](docs/ARCHITECTURE.md)，實機證據見 [v0.2 QA Evidence](docs/QA_EVIDENCE.md)，Codex review handoff 現況見 [Codex Review Handoff 可行性](docs/CODEX_REVIEW_FEASIBILITY.md)。
+先從 [繁體中文使用說明](docs/USER_GUIDE.zh-TW.md) 開始。完整需求見 [產品規格](docs/SPEC.md)，系統邊界見 [架構說明](docs/ARCHITECTURE.md)，實機證據見 [QA Evidence](docs/QA_EVIDENCE.md)，Codex review handoff 現況見 [Codex Review Handoff 可行性](docs/CODEX_REVIEW_FEASIBILITY.md)。
 
 ## 設定方式
 
@@ -65,9 +67,9 @@ AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herd
 
 Workflow recipe 不寫死 provider model ID。設定檔使用「最強推理」、「平衡建置」、「快速搜尋」等邏輯角色，再由可覆寫的 adapter policy 對應到當下可用的實際模型。
 
-## T1：從 Herdr 開啟診斷面
+## T1：從 Herdr 開啟單一入口
 
-AI Coding Mate 目前提供一條最小可用路徑：安裝 dependencies、link 成 Herdr local plugin，然後開啟診斷 pane。
+AI Coding Mate 的一般使用路徑只有一條：安裝 dependencies、link 成 Herdr local plugin，然後開啟同一個主 pane。
 
 ```bash
 bun install
@@ -87,14 +89,14 @@ doctor 的每個項目都來自 runtime read-back：Herdr 會讀 `herdr status s
 
 ## T2：從 Herdr 派出 Firstmate Quick 任務
 
-先建立 pinned、pristine 的 Firstmate distro 與隔離 `FM_HOME`，再從 Herdr 開啟 Quick pane：
+先建立 pinned、pristine 的 Firstmate distro 與隔離 `FM_HOME`，再開啟主 pane：
 
 ```bash
 bun bin/aicoding-mate bootstrap-firstmate
-bun bin/aicoding-mate open --entrypoint quick
+bun bin/aicoding-mate open
 ```
 
-Quick pane 只接受明確唯讀的檢查、搜尋、摘要、解釋或 review 任務；其他意圖會在派工前導向正式 workflow。控制通道明確分成兩個方向：
+在 pane 內輸入 `/quick`，再輸入明確唯讀的檢查、搜尋、摘要、解釋或 review 任務；也可以單行輸入 `/quick 說明這個 repository 的架構`。其他意圖會在派工前導向正式 workflow。控制通道明確分成兩個方向：
 
 - Herdr pane 到 Firstmate：`fm-brief.sh` 寫入本次 task，`fm-spawn.sh` 建立隔離 worktree 與 Codex worker。
 - Firstmate 回到 Herdr pane：`fm-peek.sh`、status 與 report 形成結果；CLI 輸出後再用 `herdr pane read` 從來源 pane 讀回同一內容。
@@ -109,21 +111,31 @@ bun bin/aicoding-mate read-run state/aicoding-mate/runs/<run-id>.json
 
 Quick record 是未簽章的歷史資料，`read-run` 會顯示內容但固定回報 `quick_record_historical_unverified`，不會標成 verified。Standard／Adversarial／Research record 只有在本次 invocation 的單一 Firstmate authority root 驗簽成功後才會 exit 0。
 
-若 bootstrap 或 spawn 失敗，先依 pane 中的 blocker 修正，再執行 `bootstrap-firstmate` 並從新的 Quick pane 重試；系統不會把缺少登入、工具、pane、隔離 worktree 或 read-back 的情況包裝成成功。
+若 bootstrap 或 spawn 失敗，先依 pane 中的 blocker 修正，再執行 `bootstrap-firstmate` 並於同一 pane 重試；系統不會把缺少登入、工具、pane、隔離 worktree 或 read-back 的情況包裝成成功。
 
-## 其他 Herdr 工作面
+## 同一 pane 內切換所有模式
 
-```bash
-bun bin/aicoding-mate open --entrypoint standard
-bun bin/aicoding-mate open --entrypoint adversarial
-bun bin/aicoding-mate open --entrypoint research
+```text
+/quick [任務]
+/standard [任務]
+/expert [任務]
+/research [任務]
+/learn [想了解的內容]
+/status
+/doctor
+/help
 ```
 
 - Standard：Firstmate/Codex 形成方案，再做跨模型 review。
-- Adversarial：Author、Challenger、Judge 最多兩輪收斂。
+- Expert：底層使用 adversarial recipe，由 Author、Challenger、Judge 最多兩輪收斂。
 - Research：保留高 recall discovery denominator、成熟度與 coverage。
+- Learn：先白話簡介，只列出目前真正需要理解的少量技術概念；後續仍在同一 pane 追問。
 - Context Branch：從 Herdr selection action 開啟，最後複誦並明確確認後才送回來源任務。
 - Codex Review：從 Herdr selection action 建立 detached native review，Review Capsule 完成與 desktop deep-link request 分開驗證。
+
+每個 slash mode 可只切換模式，也可在同一行附上任務。直接輸入一般文字時，系統使用目前模式。pane 最多保留最近四輪摘要作為本機 continuity state；本輪 `currentTask` 與歷史 `continuityContext` 是不同欄位，只有 `currentTask` 會進入 Firstmate decision、scope gate、run identity 與 worker。v0.3 不會把舊回合原文自動重灌成新指令；需要沿用的決策，應在本輪文字中複誦，或經 Context Branch 的確認 capsule 帶回。關閉 pane 會結束這段暫存對話，durable run 與 lineage 不受影響。
+
+若想一開啟就預選模式，可使用 `bun bin/aicoding-mate open --mode expert`；這仍會開啟同一個 `mate` pane，不會建立另一種工作面。
 
 主畫面只顯示結論、影響、下一步與 evidence 路徑；完整模型輸出、未知項目與 lineage 保留在 durable record。
 

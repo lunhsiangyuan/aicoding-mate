@@ -7,7 +7,7 @@ AI Coding Mate 採「薄控制層」而不是修改 Firstmate：
 ```mermaid
 flowchart TB
     subgraph UX["Interaction Surface"]
-        MAIN["主對話"]
+        MAIN["單一 AI Coding Mate pane<br/>slash modes + local bounded continuity"]
         LENS["Context Lens"]
         CR["Codex Native Review"]
     end
@@ -44,6 +44,9 @@ flowchart TB
 ### Interaction Surface
 
 - 顯示一頁主報告與可展開的證據層。
+- 一般使用只暴露一個 `mate` pane；`/quick`、`/standard`、`/expert`、`/research`、`/learn` 表達當前意圖。
+- 保留最近四輪精簡摘要作為 pane-local continuity state；它與本輪 executable task 是不同資料欄位。
+- 只有本輪 `currentTask` 進入 Firstmate decision、scope gate、run identity 與 worker；歷史內容不自動重新注入。
 - 讓使用者選取內容、開啟 Context Branch。
 - 透過 deep link 或 app-server handoff 開啟 Codex 原生 review。
 - 不直接決定模型與執行權限。
@@ -109,6 +112,25 @@ stateDiagram-v2
 - Herdr 是可見 runtime，負責 pane、tab、worktree 與 plugin context。
 - Firstmate 經 Herdr 執行，不反向把 Firstmate 嵌入 Herdr 核心。
 - AI Coding Mate 透過公開設定與 adapter surface 約束 Firstmate 的偏好、權限與 workflow，不在 Firstmate 上方增加另一個 agent。
+
+### 單一入口的控制流
+
+```mermaid
+flowchart LR
+    OPEN["aicoding-mate open"] --> MATE["Herdr mate pane"]
+    MATE --> PARSE["Slash parser<br/>只解析使用者意圖"]
+    PARSE --> Q["Quick"]
+    PARSE --> S["Standard / Learn"]
+    PARSE --> E["Expert → adversarial recipe"]
+    PARSE --> R["Research"]
+    Q --> QP["Firstmate Quick primitive<br/>historical-unverified read-back"]
+    S --> F
+    E --> F
+    R --> F
+    F["Firstmate signed decision / dispatch"] --> REG["Canonical Run Registry"]
+```
+
+Slash parser 不選 provider model、不執行 fallback、不修改 workflow barrier。console 以結構化 `MateRuntimeRequest` 分開 `currentTask` 與 `continuityContext`；dispatch 只接受前者，後者保留在 pane 互動層。若歷史決策要成為新任務的一部分，必須由使用者在本輪複誦，或經確認過的 Context Capsule 回到主 session，再重新通過 scope gate。`Learn` 只為 Standard 增加 architect-first、progressive-disclosure 的本輪任務說明；它不建立第二套 execution authority。Quick 仍是 Firstmate 下游 primitive，其歷史 record 不會被升格成 signed canonical authority。舊的 direct CLI recipe commands 只保留給 automation 與診斷，不是另一組一般使用介面。
 
 ## 3. 核心資料契約
 

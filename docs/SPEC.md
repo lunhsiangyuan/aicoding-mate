@@ -1,4 +1,4 @@
-# AI Coding Mate v0.2 產品規格
+# AI Coding Mate 產品規格
 
 - 狀態：Approved
 - 日期：2026-07-30
@@ -328,3 +328,32 @@ Run Registry 是 execution truth 的唯一持久來源：
 - `unknown_outcome` 只有在 read-back 為 `not_found` 後才能開新 attempt；在 provider 無法證明未接受時保持 fail closed。
 - signing identity 預設位於 `<state-dir>/firstmate-authority/identity/`；若 runtime 有 `FM_HOME`，則使用 `<FM_HOME>/aicoding-mate-authority/`。私鑰權限為本機使用者 `0600`。
 - Native Codex Review 的「task 建立／UI handoff」與「review turn completed／capsule read-back」分開驗收；`interrupted` 不算完成，也不觸發未授權的自動重派。
+
+## 10. v0.3 單一 Mate 入口
+
+### FR-14 單一主 pane
+
+- Herdr manifest 只暴露一個一般使用主 pane：`mate`。
+- Quick、Standard、Expert、Research、Learn 必須由同一 pane 的 slash command 切換，不得要求使用者記住多個 entrypoint。
+- `aicoding-mate open --mode <mode>` 只能預選初始模式，仍須開啟 `mate`。
+- Context Branch 與 Codex Review 是選取內容後的輔助 action，不是平行主入口。
+
+### FR-15 模式與 authority 分離
+
+- slash parser 只表達使用者意圖，不可直接選 model、fallback、reviewer 或停止條件。
+- Quick、Standard、Expert 與 Research 必須重用既有受管 workflow；Expert 對應底層 `adversarial` recipe。
+- Learn 必須重用 Standard workflow，只加入「先白話、後細節」的 progressive-disclosure 指令。
+- 同一 pane 最多保留最近四輪摘要作為 `continuityContext`；它與本輪 `currentTask` 必須是不同結構欄位。
+- Firstmate decision、scope validation、run identity 與 worker input 只能使用 `currentTask`；歷史內容不得以 prompt envelope 或原文自動重新注入。
+- 歷史決策若要成為新任務的一部分，必須由使用者在本輪複誦，或經已確認的 Context Capsule 帶回後重新通過 scope gate。
+- 關閉 pane 可清除短期 context；durable decision、run、artifact 與 lineage 不得受影響。
+
+### v0.3 驗收
+
+1. `open` 未指定 mode 時開啟 `mate` 並以 Standard 起始。
+2. `open --mode expert` 仍開啟 `mate`，並傳入 `ACM_INITIAL_MODE=expert`。
+3. `/expert` 只切換模式；`/expert <任務>` 切換後立即走 adversarial workflow。
+4. `/learn <內容>` 先產生 architect-first 分層任務，再走 Standard workflow。
+5. `/help`、`/status`、`/doctor`、未知 slash command 與 `/quit` 都不會誤派模型。
+6. 第五個完成回合加入後，短期 context 只保留最近四輪。
+7. 第二輪 dispatch 的 task／decision identity 不包含第一輪 request 或 summary；第一輪只存在於 `ui_continuity_only` metadata。
