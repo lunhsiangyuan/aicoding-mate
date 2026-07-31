@@ -320,6 +320,7 @@ function firstmateCandidates(options: ProbeOptions): string[] {
   const candidates = [
     options.env.FIRSTMATE_ROOT,
     options.env.ACM_FIRSTMATE_ROOT,
+    resolve(options.cwd, "state", "upstream", "firstmate"),
     resolve(options.cwd, "..", "firstmate"),
     resolve(dirname(options.cwd), "firstmate"),
   ];

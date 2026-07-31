@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
@@ -38,13 +38,37 @@ describe("runtime probe", () => {
       writeFileSync(fakeFirstmate, "#!/bin/sh\necho 'this should not be used'\n");
       chmodSync(fakeFirstmate, 0o755);
 
-      const probe = probeFirstmate({ cwd: process.cwd(), env: { PATH: dir } });
+      const probe = probeFirstmate({ cwd: dir, env: { PATH: dir } });
 
       expect(probe.status).toBe("missing");
       expect(probe.command).toContain("FIRSTMATE_ROOT");
       expect(probe.command).not.toContain("firstmate --version");
       expect(probe.detail).toBe("尚未 bootstrap: kunchenguid/firstmate@e595611291247368b982eb729097c54f2b45aa78");
       expect(probe.ref).toBe("e595611291247368b982eb729097c54f2b45aa78");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("finds the canonical bootstrap-firstmate install without environment overrides", () => {
+    const dir = mkdtempSync(join(tmpdir(), "acm-firstmate-bootstrap-"));
+    try {
+      const binDir = join(dir, "bin");
+      const firstmateRoot = join(dir, "state", "upstream", "firstmate");
+      mkdirSync(binDir, { recursive: true });
+      mkdirSync(firstmateRoot, { recursive: true });
+      const fakeGit = join(binDir, "git");
+      writeFileSync(
+        fakeGit,
+        "#!/bin/sh\necho 'e595611291247368b982eb729097c54f2b45aa78'\n",
+      );
+      chmodSync(fakeGit, 0o755);
+
+      const probe = probeFirstmate({ cwd: dir, env: { PATH: binDir } });
+
+      expect(probe.status).toBe("ok");
+      expect(probe.root).toBe(firstmateRoot);
+      expect(probe.currentRef).toBe("e595611291247368b982eb729097c54f2b45aa78");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
