@@ -23,10 +23,18 @@ export interface CodexAppServerRuntimeOptions {
   readonly threadConfig?: Readonly<Record<string, unknown>>;
   readonly timeoutMs?: number;
   readonly now?: () => string;
+  readonly onReviewStarted?: (
+    request: CodexReviewStartRequest,
+    receipt: CodexReviewStartReceipt,
+  ) => void | Promise<void>;
 }
 
 export interface DisposableCodexAppServerReviewPort
   extends CodexAppServerReviewPort {
+  restoreReviewSession(
+    request: CodexReviewStartRequest,
+    receipt: CodexReviewStartReceipt,
+  ): void;
   dispose(): Promise<void>;
 }
 
@@ -113,6 +121,9 @@ export function createCodexAppServerReviewPort(
     readReviewThread(reviewThreadId) {
       return runtime.readReviewThread(reviewThreadId);
     },
+    restoreReviewSession(request, receipt) {
+      runtime.restoreReviewSession(request, receipt);
+    },
     dispose() {
       return runtime.dispose();
     },
@@ -160,6 +171,12 @@ class CodexAppServerRuntime implements CodexAppServerReviewPort {
   private readonly threadConfig: Readonly<Record<string, unknown>> | null;
   private readonly timeoutMs: number;
   private readonly now: () => string;
+  private readonly onReviewStarted:
+    | ((
+        request: CodexReviewStartRequest,
+        receipt: CodexReviewStartReceipt,
+      ) => void | Promise<void>)
+    | null;
   private readonly sessions = new Map<string, ReviewSession>();
   private client: StdioJsonRpcClient | null = null;
   private initialized = false;
@@ -173,6 +190,7 @@ class CodexAppServerRuntime implements CodexAppServerReviewPort {
     this.threadConfig = options.threadConfig ?? null;
     this.timeoutMs = options.timeoutMs ?? 120_000;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.onReviewStarted = options.onReviewStarted ?? null;
   }
 
   async startReview(
@@ -204,6 +222,17 @@ class CodexAppServerRuntime implements CodexAppServerReviewPort {
     if (turnId === null) {
       throw new CodexAppServerRuntimeError("review_turn_id_missing");
     }
+    const acceptedReceipt: CodexReviewStartReceipt = {
+      sourceThreadId,
+      reviewThreadId,
+      delivery: "detached",
+      turnId,
+      eventIds: stableEventIds([
+        ...eventsForThread(client.eventsForThread(sourceThreadId), sourceThreadId),
+        ...eventsForThread(client.eventsForThread(reviewThreadId), reviewThreadId),
+      ]),
+    };
+    await this.onReviewStarted?.(request, acceptedReceipt);
 
     const completed = await client.waitForEvent(
       (event) => isReviewCompletionEvent(event, reviewThreadId, turnId),
@@ -231,12 +260,32 @@ class CodexAppServerRuntime implements CodexAppServerReviewPort {
     });
 
     return {
-      sourceThreadId,
-      reviewThreadId,
-      delivery: "detached",
-      turnId,
+      ...acceptedReceipt,
       eventIds,
     };
+  }
+
+  restoreReviewSession(
+    request: CodexReviewStartRequest,
+    receipt: CodexReviewStartReceipt,
+  ): void {
+    if (request.delivery !== "detached" || receipt.delivery !== "detached") {
+      throw new CodexAppServerRuntimeError("codex_review_requires_detached_delivery");
+    }
+    assertStableThreadId(receipt.sourceThreadId, "bad_source_thread_id");
+    assertStableThreadId(receipt.reviewThreadId, "bad_review_thread_id");
+    if (receipt.turnId === null || receipt.turnId.trim().length === 0) {
+      throw new CodexAppServerRuntimeError("review_turn_id_missing");
+    }
+    this.sessions.set(receipt.reviewThreadId, {
+      request,
+      sourceThreadId: receipt.sourceThreadId,
+      reviewThreadId: receipt.reviewThreadId,
+      turnId: receipt.turnId,
+      sourceLineageHash: sourceLineageHash(request.source.lineage),
+      events: [],
+      completedAt: null,
+    });
   }
 
   async readReviewThread(reviewThreadId: string): Promise<CodexReviewReadback> {

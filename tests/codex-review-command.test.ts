@@ -20,6 +20,7 @@ import {
 import type { CodexAppServerRuntimeOptions } from "../src/integration/codex-review-runtime.ts";
 import type {
   CodexReviewReadback,
+  CodexReviewStartReceipt,
   CodexReviewStartRequest,
 } from "../src/review/index.ts";
 
@@ -397,6 +398,102 @@ describe("Codex review command bridge", () => {
       reason: "open exited 1",
     });
     expect(existsSync(result.capsulePath)).toBe(true);
+  });
+
+  test("reconciles a crash after review/start by reading the same Codex thread without redispatch", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-review-reconcile-"));
+    writeRunRecord(join(root, "state", "aicoding-mate"));
+    let factoryCalls = 0;
+    let reviewStarts = 0;
+    let restores = 0;
+    let restoredRequest: CodexReviewStartRequest | null = null;
+    const ports = {
+      createAppServerReviewPort(options: CodexAppServerRuntimeOptions) {
+        factoryCalls += 1;
+        if (factoryCalls === 1) {
+          return {
+            async startReview(request: CodexReviewStartRequest) {
+              reviewStarts += 1;
+              const receipt = {
+                sourceThreadId: "thread-source-1",
+                reviewThreadId: "thread-review-1",
+                delivery: "detached" as const,
+                turnId: "turn-review-1",
+                eventIds: ["turn-review-1"],
+              };
+              await options.onReviewStarted?.(request, receipt);
+              throw new Error("process_crashed_after_review_start");
+            },
+            async readReviewThread() {
+              throw new Error("first_process_cannot_read");
+            },
+            async dispose() {},
+          };
+        }
+        let restoredReceipt: {
+          readonly sourceThreadId: string;
+          readonly reviewThreadId: string;
+        } | null = null;
+        return {
+          async startReview() {
+            reviewStarts += 1;
+            throw new Error("review_start_must_not_repeat");
+          },
+          restoreReviewSession(
+            request: CodexReviewStartRequest,
+            receipt: CodexReviewStartReceipt,
+          ) {
+            restores += 1;
+            restoredRequest = request;
+            restoredReceipt = receipt;
+          },
+          async readReviewThread(reviewThreadId: string) {
+            const request = requireValue(restoredRequest, "restoredRequest");
+            const receipt = requireValue(restoredReceipt, "restoredReceipt");
+            return {
+              ok: true as const,
+              threadId: reviewThreadId,
+              sourceThreadId: receipt.sourceThreadId,
+              sourceLineageHash: sourceLineageHash(request.source.lineage),
+              summary: "src/review/index.ts:12 changes requested",
+              decision: "changes_requested" as const,
+              rawReviewText: "src/review/index.ts:12 changes requested",
+              annotations: [],
+              nativeAnnotationExport: "unverifiable" as const,
+              eventIds: ["turn-review-1"],
+              completedAt: "2026-07-30T21:01:00.000Z",
+            };
+          },
+          async dispose() {},
+        };
+      },
+      launchDesktop() {
+        return { requested: true as const, reason: null };
+      },
+    };
+    const options = {
+      contextJson: invocation(),
+      cwd: root,
+      env: {},
+      now: () => "2026-07-30T21:00:00.000Z",
+      ports,
+    };
+
+    const crashed = await runCodexReviewFromHerdrSelection(options);
+    const reconciled = await runCodexReviewFromHerdrSelection(options);
+
+    expect(crashed).toEqual({
+      ok: false,
+      status: "failed_closed",
+      reason: "app_server_unavailable",
+    });
+    expect(reconciled.ok).toBe(true);
+    if (!reconciled.ok) throw new Error(reconciled.reason);
+    expect(reconciled.dedupeStatus).toBe("reconciled");
+    expect(reconciled.capsule.codex.reviewThreadId).toBe("thread-review-1");
+    expect(factoryCalls).toBe(2);
+    expect(reviewStarts).toBe(1);
+    expect(restores).toBe(1);
   });
 
   test("coalesces the same completed selection without starting another Codex review", async () => {

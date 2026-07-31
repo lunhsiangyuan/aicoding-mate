@@ -114,6 +114,28 @@ export interface CodexAppServerReviewPort {
   readReviewThread(reviewThreadId: string): Promise<CodexReviewReadback>;
 }
 
+export function codexReviewStartRequest(
+  input: ReviewCapsuleInput,
+): CodexReviewStartRequest {
+  const reviewerStage = lookupExactStageAssignment(
+    input.workflowDecision,
+    "reviewer",
+  );
+  return {
+    workflowDecisionId: input.workflowDecision.workflowDecisionId,
+    decisionHash: input.workflowDecision.decisionHash,
+    stageId: "reviewer",
+    idempotencyKey: input.idempotencyKey,
+    exactAssignment: reviewerStage.roleAssignment,
+    source: input.source,
+    target: input.target,
+    selection: input.selection,
+    prompt: input.prompt,
+    delivery: input.delivery ?? "detached",
+    parentThreadReadState: input.parentThreadReadState ?? "complete",
+  };
+}
+
 export interface CodexDesktopOpenRequest {
   readonly reviewThreadId: string;
   readonly url: string;
@@ -325,25 +347,9 @@ export async function createReviewCapsule(
     return fail("parent_thread_ambiguous");
   }
 
-  const reviewerStage = lookupExactStageAssignment(
-    input.workflowDecision,
-    "reviewer",
-  );
   let start: CodexReviewStartReceipt;
   try {
-    start = await ports.appServer.startReview({
-      workflowDecisionId: input.workflowDecision.workflowDecisionId,
-      decisionHash: input.workflowDecision.decisionHash,
-      stageId: "reviewer",
-      idempotencyKey: input.idempotencyKey,
-      exactAssignment: reviewerStage.roleAssignment,
-      source: input.source,
-      target: input.target,
-      selection: input.selection,
-      prompt: input.prompt,
-      delivery,
-      parentThreadReadState,
-    });
+    start = await ports.appServer.startReview(codexReviewStartRequest(input));
   } catch {
     return fail("app_server_unavailable");
   }

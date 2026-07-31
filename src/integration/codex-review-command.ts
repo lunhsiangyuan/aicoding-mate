@@ -1,7 +1,21 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 
 import {
   workflowDispatchIdempotencyKey,
@@ -26,8 +40,11 @@ import {
   type WorkflowDecisionEnvelope,
 } from "../contracts/index.ts";
 import {
+  codexReviewStartRequest,
   createReviewCapsule,
   type CodexAppServerReviewPort,
+  type CodexReviewStartReceipt,
+  type CodexReviewStartRequest,
   type ReviewCapsule,
   type ReviewCapsuleFailureReason,
   type ReviewCapsuleInput,
@@ -63,6 +80,10 @@ export interface CodexReviewCommandPorts {
 }
 
 export type DisposableCodexReviewPort = CodexAppServerReviewPort & {
+  restoreReviewSession?(
+    request: CodexReviewStartRequest,
+    receipt: CodexReviewStartReceipt,
+  ): void;
   dispose(): Promise<void>;
 };
 
@@ -119,7 +140,7 @@ export type CodexReviewCommandResult =
       readonly capsulePath: string;
       readonly capsule: ReviewCapsule;
       readonly desktopLaunch: CodexReviewDesktopLaunchStatus;
-      readonly dedupeStatus: "new" | "coalesced_completed";
+      readonly dedupeStatus: "new" | "reconciled" | "coalesced_completed";
     }
   | {
       readonly ok: false;
@@ -132,6 +153,14 @@ interface BasicHerdrSelection {
   readonly workspace: string;
   readonly tabId: string;
   readonly focusedPaneId: string;
+}
+
+interface NativeReviewStartArtifact {
+  readonly schemaVersion: 1;
+  readonly requestIdentityHash: string;
+  readonly acceptedAt: string;
+  readonly start: CodexReviewStartReceipt;
+  readonly receiptPath: string;
 }
 
 export async function runCodexReviewFromHerdrSelection(
@@ -269,26 +298,74 @@ export async function runCodexReviewFromHerdrSelection(
       dedupeStatus: "coalesced_completed",
     };
   }
-  if (opened.kind !== "created") {
+  let lease: RegistryLease;
+  let restoredStart: NativeReviewStartArtifact | null = null;
+  if (opened.kind === "created") {
+    lease = opened.lease;
+    registry.recordDispatch(lease, {
+      idempotencyKey: dispatchKey,
+      target: reviewer.resolvedModel,
+      receiptPath: null,
+      accepted: false,
+      now: now(),
+    });
+  } else if (opened.kind === "opened") {
+    const acquiredLease = registry.acquireRunLease({
+      runId: opened.run.runId,
+      owner: `native-review-reconcile:${process.pid}:${randomUUID()}`,
+      leaseTtlMs: parsePositiveInteger(
+        options.env.ACM_RUN_LEASE_TTL_MS,
+        900_000,
+      ),
+      now: now(),
+    });
+    if (acquiredLease === null) {
+      return fail("canonical_review_active");
+    }
+    lease = acquiredLease;
+    const priorDispatch = opened.run.attempts.at(-1)?.dispatches.find(
+      (dispatch) => dispatch.idempotencyKey === dispatchKey,
+    );
+    restoredStart = readNativeReviewStartArtifact(
+      stateDir,
+      codexReviewStartRequest(capsuleInput),
+      priorDispatch?.receiptPath ?? null,
+    );
+    if (restoredStart === null) {
+      releaseReviewLease(registry, lease);
+      return fail("canonical_review_requires_reconciliation");
+    }
+  } else {
     return fail(
       opened.kind === "coalesced_active"
         ? "canonical_review_active"
         : "canonical_review_requires_reconciliation",
     );
   }
-  const lease = opened.lease;
-  registry.recordDispatch(lease, {
-    idempotencyKey: dispatchKey,
-    target: reviewer.resolvedModel,
-    receiptPath: null,
-    accepted: false,
-    now: now(),
-  });
-  const appServerOptions = codexAppServerOptions(
-    options,
-    workflowDecision,
-    dispatchKey,
-  );
+  const startRequest = codexReviewStartRequest(capsuleInput);
+  let acceptedStart = restoredStart;
+  const appServerOptions: CodexAppServerRuntimeOptions = {
+    ...codexAppServerOptions(
+      options,
+      workflowDecision,
+      dispatchKey,
+    ),
+    onReviewStarted: (request, receipt) => {
+      const artifact = persistNativeReviewStartArtifact(
+        stateDir,
+        request,
+        receipt,
+        now(),
+      );
+      registry.acceptDispatch(lease, {
+        idempotencyKey: dispatchKey,
+        target: receipt.reviewThreadId,
+        receiptPath: artifact.receiptPath,
+        now: now(),
+      });
+      acceptedStart = artifact;
+    },
+  };
   const createAppServer =
     ports.createAppServerReviewPort ?? createCodexAppServerReviewPort;
   let appServer: DisposableCodexReviewPort;
@@ -300,6 +377,39 @@ export async function runCodexReviewFromHerdrSelection(
     return fail("app_server_unavailable");
   }
 
+  let capsuleAppServer: CodexAppServerReviewPort = appServer;
+  if (restoredStart !== null) {
+    const restoredArtifact = restoredStart;
+    if (appServer.restoreReviewSession === undefined) {
+      markReviewUnknown(registry, lease, now, "review_restore_port_unavailable");
+      releaseReviewLease(registry, lease);
+      await appServer.dispose();
+      return fail("canonical_review_requires_reconciliation");
+    }
+    try {
+      appServer.restoreReviewSession(startRequest, restoredArtifact.start);
+    } catch {
+      markReviewUnknown(registry, lease, now, "review_restore_failed");
+      releaseReviewLease(registry, lease);
+      await appServer.dispose();
+      return fail("canonical_review_requires_reconciliation");
+    }
+    capsuleAppServer = {
+      async startReview(request) {
+        if (
+          nativeReviewRequestIdentityHash(request)
+          !== restoredArtifact.requestIdentityHash
+        ) {
+          throw new Error("native_review_restore_identity_mismatch");
+        }
+        return restoredArtifact.start;
+      },
+      readReviewThread(reviewThreadId) {
+        return appServer.readReviewThread(reviewThreadId);
+      },
+    };
+  }
+
   try {
     registry.renewLease(lease, {
       leaseTtlMs: parsePositiveInteger(
@@ -309,7 +419,7 @@ export async function runCodexReviewFromHerdrSelection(
       now: now(),
     });
     const capsuleResult = await createReviewCapsule(capsuleInput, {
-      appServer,
+      appServer: capsuleAppServer,
       trustedAuthorityRoot,
     });
     if (!capsuleResult.ok) {
@@ -321,12 +431,28 @@ export async function runCodexReviewFromHerdrSelection(
       );
       return fail(capsuleResult.reason);
     }
-    registry.acceptDispatch(lease, {
-      idempotencyKey: dispatchKey,
-      target: capsuleResult.capsule.codex.reviewThreadId,
-      receiptPath: null,
-      now: now(),
-    });
+    if (acceptedStart === null) {
+      acceptedStart = persistNativeReviewStartArtifact(
+        stateDir,
+        startRequest,
+        startReceiptFromCapsule(capsuleResult.capsule),
+        now(),
+      );
+    }
+    const currentDispatch = registry
+      .readRun(opened.run.runId)
+      ?.attempts.at(-1)
+      ?.dispatches.find(
+        (dispatch) => dispatch.idempotencyKey === dispatchKey,
+      );
+    if (currentDispatch?.receiptPath !== acceptedStart.receiptPath) {
+      registry.acceptDispatch(lease, {
+        idempotencyKey: dispatchKey,
+        target: acceptedStart.start.reviewThreadId,
+        receiptPath: acceptedStart.receiptPath,
+        now: now(),
+      });
+    }
     registry.markRunning(lease, { now: now() });
 
     const capsulePath = join(
@@ -381,7 +507,7 @@ export async function runCodexReviewFromHerdrSelection(
         options,
         ports.launchDesktop,
       ),
-      dedupeStatus: "new",
+      dedupeStatus: restoredStart === null ? "new" : "reconciled",
     };
   } finally {
     await appServer.dispose();
@@ -517,6 +643,161 @@ function releaseReviewLease(
     registry.releaseLease(lease);
   } catch {
   }
+}
+
+function persistNativeReviewStartArtifact(
+  stateDir: string,
+  request: CodexReviewStartRequest,
+  start: CodexReviewStartReceipt,
+  acceptedAt: string,
+): NativeReviewStartArtifact {
+  const payload = {
+    schemaVersion: 1 as const,
+    requestIdentityHash: nativeReviewRequestIdentityHash(request),
+    acceptedAt,
+    start,
+  };
+  const receiptHash = sha256(JSON.stringify(payload));
+  const receiptPath = join(
+    nativeReviewStartArtifactDir(stateDir, request.idempotencyKey),
+    `${receiptHash}.json`,
+  );
+  writeJsonAtomic(receiptPath, payload);
+  const readBack = readNativeReviewStartArtifact(
+    stateDir,
+    request,
+    receiptPath,
+  );
+  if (readBack === null) {
+    throw new Error("native_review_start_receipt_readback_failed");
+  }
+  return readBack;
+}
+
+function readNativeReviewStartArtifact(
+  stateDir: string,
+  request: CodexReviewStartRequest,
+  receiptPath: string | null,
+): NativeReviewStartArtifact | null {
+  if (receiptPath !== null) {
+    return readNativeReviewStartArtifactAt(stateDir, request, receiptPath);
+  }
+  const directory = nativeReviewStartArtifactDir(
+    stateDir,
+    request.idempotencyKey,
+  );
+  if (!existsSync(directory)) return null;
+  const matches = readdirSync(directory)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) =>
+      readNativeReviewStartArtifactAt(
+        stateDir,
+        request,
+        join(directory, name),
+      )
+    )
+    .filter(
+      (artifact): artifact is NativeReviewStartArtifact => artifact !== null,
+    );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function readNativeReviewStartArtifactAt(
+  stateDir: string,
+  request: CodexReviewStartRequest,
+  receiptPath: string,
+): NativeReviewStartArtifact | null {
+  const root = resolve(stateDir, "native-review-dispatches");
+  const absolutePath = resolve(receiptPath);
+  const relativePath = relative(root, absolutePath);
+  if (
+    relativePath.length === 0
+    || relativePath === ".."
+    || relativePath.startsWith("../")
+    || relativePath.startsWith("..\\")
+    || isAbsolute(relativePath)
+  ) {
+    return null;
+  }
+  try {
+    const value: unknown = JSON.parse(readFileSync(absolutePath, "utf8"));
+    if (!isNativeReviewStartArtifactPayload(value)) return null;
+    if (
+      value.requestIdentityHash !== nativeReviewRequestIdentityHash(request)
+      || !Number.isFinite(Date.parse(value.acceptedAt))
+    ) {
+      return null;
+    }
+    const payloadHash = sha256(JSON.stringify(value));
+    if (basename(absolutePath) !== `${payloadHash}.json`) return null;
+    return {
+      ...value,
+      receiptPath: absolutePath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function nativeReviewStartArtifactDir(
+  stateDir: string,
+  idempotencyKey: string,
+): string {
+  return join(
+    resolve(stateDir, "native-review-dispatches"),
+    sha256(idempotencyKey),
+  );
+}
+
+function nativeReviewRequestIdentityHash(
+  request: CodexReviewStartRequest,
+): string {
+  return sha256(JSON.stringify(request));
+}
+
+function isNativeReviewStartArtifactPayload(value: unknown): value is {
+  readonly schemaVersion: 1;
+  readonly requestIdentityHash: string;
+  readonly acceptedAt: string;
+  readonly start: CodexReviewStartReceipt;
+} {
+  if (!isRecord(value) || value.schemaVersion !== 1) return false;
+  if (
+    typeof value.requestIdentityHash !== "string"
+    || !/^[a-f0-9]{64}$/.test(value.requestIdentityHash)
+    || typeof value.acceptedAt !== "string"
+    || !isRecord(value.start)
+  ) {
+    return false;
+  }
+  const start = value.start;
+  return (
+    typeof start.sourceThreadId === "string"
+    && isStableRuntimeId(start.sourceThreadId)
+    && typeof start.reviewThreadId === "string"
+    && isStableRuntimeId(start.reviewThreadId)
+    && start.delivery === "detached"
+    && typeof start.turnId === "string"
+    && start.turnId.trim().length > 0
+    && Array.isArray(start.eventIds)
+    && start.eventIds.every((eventId) => typeof eventId === "string")
+  );
+}
+
+function startReceiptFromCapsule(
+  capsule: ReviewCapsule,
+): CodexReviewStartReceipt {
+  return {
+    sourceThreadId: capsule.codex.sourceThreadId,
+    reviewThreadId: capsule.codex.reviewThreadId,
+    delivery: capsule.codex.delivery,
+    turnId: capsule.lineage.turnId,
+    eventIds: capsule.lineage.eventIds,
+  };
+}
+
+function isStableRuntimeId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value);
 }
 
 function readCompletedCapsule(

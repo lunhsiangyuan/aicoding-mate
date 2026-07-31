@@ -20,6 +20,7 @@ import {
 import {
   createReviewCapsule,
   openCodexDesktopThread,
+  type CodexReviewStartReceipt,
   type CodexReviewStartRequest,
   type ReviewCapsuleInput,
 } from "../src/review/index.ts";
@@ -104,12 +105,16 @@ describe("Codex app-server review runtime", () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-codex-runtime-"));
     const logPath = join(root, "requests.jsonl");
     const script = fakeAppServer(root, "happy", logPath);
+    let accepted: CodexReviewStartReceipt | null = null;
     const port = createCodexAppServerReviewPort({
       command: process.execPath,
       args: [script],
       cwd: root,
       timeoutMs: 1_000,
       now: () => "2026-07-30T20:01:00.000Z",
+      onReviewStarted(_request, receipt) {
+        accepted = receipt;
+      },
     });
 
     try {
@@ -122,6 +127,12 @@ describe("Codex app-server review runtime", () => {
         delivery: "detached",
         turnId: "turn-review-1",
         eventIds: ["item-review", "turn-review-1"],
+      });
+      expect(accepted).toMatchObject({
+        sourceThreadId: "thread-source-1",
+        reviewThreadId: "thread-review-1",
+        delivery: "detached",
+        turnId: "turn-review-1",
       });
       expect(readBack.ok).toBe(true);
       if (!readBack.ok) throw new Error(readBack.reason);
@@ -184,6 +195,48 @@ describe("Codex app-server review runtime", () => {
         "delivery",
         "target",
         "threadId",
+      ]);
+    } finally {
+      await port.dispose();
+    }
+  });
+
+  test("restores a persisted review session and reads the existing thread without review/start", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-codex-restore-"));
+    const logPath = join(root, "requests.jsonl");
+    const script = fakeAppServer(root, "happy", logPath);
+    const port = createCodexAppServerReviewPort({
+      command: process.execPath,
+      args: [script],
+      cwd: root,
+      timeoutMs: 1_000,
+      now: () => "2026-07-30T20:02:00.000Z",
+    });
+    const persisted: CodexReviewStartReceipt = {
+      sourceThreadId: "thread-source-1",
+      reviewThreadId: "thread-review-1",
+      delivery: "detached",
+      turnId: "turn-review-1",
+      eventIds: ["turn-review-1"],
+    };
+
+    try {
+      port.restoreReviewSession(request, persisted);
+      const readBack = await port.readReviewThread(persisted.reviewThreadId);
+
+      expect(readBack.ok).toBe(true);
+      if (!readBack.ok) throw new Error(readBack.reason);
+      expect(readBack.threadId).toBe("thread-review-1");
+      expect(readBack.sourceThreadId).toBe("thread-source-1");
+      expect(readBack.sourceLineageHash).toBe(sourceLineageHash(lineage));
+      const calls = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(calls.map((call) => call.method)).toEqual([
+        "initialize",
+        "initialized",
+        "thread/read",
       ]);
     } finally {
       await port.dispose();
