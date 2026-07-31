@@ -27,6 +27,7 @@ import {
 import {
   FileRunRegistry,
   type RegistryLease,
+  type ReadbackObservation,
   type RunProjection,
 } from "../runtime/run-registry.ts";
 import {
@@ -74,10 +75,23 @@ export interface HighIntensityModelResult {
   readonly receiptPath: string;
 }
 
+export type HighIntensityModelReadback =
+  | {
+      readonly status: "found";
+      readonly result: HighIntensityModelResult;
+    }
+  | Extract<
+      ReadbackObservation,
+      { readonly status: "not_found" | "mismatch" }
+    >;
+
 export interface HighIntensityModelPort {
   readonly execute: (
     request: HighIntensityModelRequest,
   ) => Promise<HighIntensityModelResult>;
+  readonly readBack: (
+    request: HighIntensityModelRequest,
+  ) => Promise<HighIntensityModelReadback>;
 }
 
 export interface HighIntensityCallRecord {
@@ -141,6 +155,7 @@ export interface HighIntensityRunResult {
   readonly record: HighIntensityRunRecord;
   readonly dedupeStatus:
     | "new"
+    | "reconciled"
     | "coalesced_active"
     | "coalesced_completed"
     | "reconciliation_required";
@@ -266,6 +281,7 @@ export async function createHighIntensityRun(
     },
   };
 
+  let lease: RegistryLease | null = null;
   if (opened.kind !== "created") {
     const existing = readHighIntensityRunRecord(recordPath);
     if (
@@ -280,25 +296,62 @@ export async function createHighIntensityRun(
         dedupeStatus: "coalesced_completed",
       };
     }
-    return {
-      ok: false,
-      record: existing ?? {
-        ...base,
-        blockers: [
+    if (
+      opened.kind !== "opened"
+      || (
+        opened.run.status !== "unknown_outcome"
+        && opened.run.status !== "pending"
+        && opened.run.status !== "dispatching"
+        && opened.run.status !== "accepted"
+        && opened.run.status !== "running"
+      )
+    ) {
+      return {
+        ok: false,
+        record: existing ?? {
+          ...base,
+          blockers: [
+            opened.kind === "coalesced_active"
+              ? "canonical_run_active"
+              : "canonical_run_requires_reconciliation",
+          ],
+        },
+        dedupeStatus:
           opened.kind === "coalesced_active"
-            ? "canonical_run_active"
-            : "canonical_run_requires_reconciliation",
-        ],
-      },
-      dedupeStatus:
-        opened.kind === "coalesced_active"
-          ? "coalesced_active"
-          : "reconciliation_required",
-    };
+            ? "coalesced_active"
+            : "reconciliation_required",
+      };
+    }
+    lease = registry.acquireRunLease({
+      runId: opened.run.runId,
+      owner: `high-intensity-reconcile:${process.pid}:${randomUUID()}`,
+      leaseTtlMs: 900_000,
+      now: createdAt,
+    });
+    if (lease === null) {
+      return {
+        ok: false,
+        record: existing ?? base,
+        dedupeStatus: "coalesced_active",
+      };
+    }
+    if (opened.run.status !== "unknown_outcome") {
+      registry.markUnknownOutcome(lease, {
+        reason: "stale_lease_requires_downstream_readback",
+        readback: {
+          status: "mismatch",
+          checkedAt: now(),
+          reason: "previous_owner_lease_expired",
+        },
+        now: now(),
+      });
+    }
+  } else {
+    lease = opened.lease;
+    writeHighIntensityRunRecord(base);
   }
 
-  const lease = opened.lease;
-  writeHighIntensityRunRecord(base);
+  if (lease === null) throw new Error("registry_lease_missing");
   const stageAssignment = (stageId: HighIntensityCallPhase): RoleAssignment =>
     workflowAuthority.authorizeStage({
       workflowDecision,
@@ -497,6 +550,24 @@ export async function createHighIntensityRun(
       );
     }
 
+    const reportAssignment = workflowAuthority.authorizeStage({
+      workflowDecision,
+      receipt: workflowDecisionReceipt,
+      stageId: "report",
+    }).roleAssignment;
+    if (
+      reportAssignment.role !== "report_composer"
+      || reportAssignment.provider !== "firstmate"
+    ) {
+      return blockedRegistered(
+        { ...base, calls, research, coverage, adversarial },
+        now,
+        "report_composer_assignment_invalid",
+        registry,
+        lease,
+        "failed",
+      );
+    }
     const composed = composeHighIntensityReport({
       input: options.input,
       routingDecision,
@@ -512,6 +583,7 @@ export async function createHighIntensityRun(
         lineage: [
           `workflow_decision:${workflowDecision.workflowDecisionId}`,
           `decision_hash:${workflowDecision.decisionHash}`,
+          `report_composer:${reportAssignment.alias}:${reportAssignment.resolvedModel}`,
           ...composed.evidenceLayer.lineage,
         ],
       },
@@ -543,13 +615,19 @@ export async function createHighIntensityRun(
       readback: {
         status: "found",
         runId: opened.run.runId,
-        attemptId: activeAttemptId(opened.run),
+        attemptId: activeAttemptId(
+          registry.readRun(opened.run.runId) ?? opened.run,
+        ),
         artifactPath: record.recordPath,
         artifactHash: fileSha256(record.recordPath),
       },
       now: now(),
     });
-    return { ok: true, record, dedupeStatus: "new" };
+    return {
+      ok: true,
+      record,
+      dedupeStatus: opened.kind === "created" ? "new" : "reconciled",
+    };
   } finally {
     releaseLeaseIfHeld(registry, lease);
   }
@@ -593,32 +671,103 @@ async function executeModel(options: {
     options.phase,
     options.round,
   );
-  options.registry.recordDispatch(options.lease, {
+  const request: HighIntensityModelRequest = {
+    assignment: options.assignment,
+    prompt: options.prompt,
+    contextId: options.contextId,
+    phase: options.phase,
+    round: options.round,
+    workflowDecisionId: options.workflowDecision.workflowDecisionId,
+    decisionHash: options.workflowDecision.decisionHash,
+    stageId: options.phase,
     idempotencyKey,
-    target: options.assignment.alias,
-    receiptPath: null,
-    accepted: false,
-    now: options.now(),
-  });
+  };
+  const current = options.registry.readRun(options.run.runId);
+  if (current === null) {
+    throw new Error("canonical_run_missing_during_dispatch");
+  }
+  const existingDispatch = current.attempts.at(-1)?.dispatches.find(
+    (dispatch) => dispatch.idempotencyKey === idempotencyKey,
+  );
   let result: HighIntensityModelResult;
-  try {
-    result = await options.port.execute({
-      assignment: options.assignment,
-      prompt: options.prompt,
-      contextId: options.contextId,
-      phase: options.phase,
-      round: options.round,
-      workflowDecisionId: options.workflowDecision.workflowDecisionId,
-      decisionHash: options.workflowDecision.decisionHash,
-      stageId: options.phase,
+  if (existingDispatch !== undefined) {
+    let readback: HighIntensityModelReadback;
+    try {
+      readback = await options.port.readBack(request);
+    } catch {
+      return markModelUnknownOutcome(
+        options,
+        `model_readback_unknown_outcome:${options.phase}`,
+        {
+          status: "mismatch",
+          checkedAt: options.now(),
+          reason: "adapter_readback_threw_without_verified_observation",
+        },
+      );
+    }
+    if (readback.status === "found") {
+      result = readback.result;
+    } else if (readback.status === "not_found") {
+      const beforeRetry = options.registry.readRun(options.run.runId);
+      if (beforeRetry?.status !== "unknown_outcome") {
+        options.registry.markUnknownOutcome(options.lease, {
+          reason: `model_readback_not_found:${options.phase}`,
+          readback,
+          now: options.now(),
+        });
+      }
+      options.registry.requestRetryAfterReadbackNotFound(options.lease, {
+        readback,
+        now: options.now(),
+      });
+      options.registry.recordDispatch(options.lease, {
+        idempotencyKey,
+        target: options.assignment.alias,
+        receiptPath: null,
+        accepted: false,
+        now: options.now(),
+      });
+      try {
+        result = await options.port.execute(request);
+      } catch {
+        return markModelUnknownOutcome(
+          options,
+          `model_execution_unknown_outcome:${options.phase}`,
+          {
+            status: "mismatch",
+            checkedAt: options.now(),
+            reason: "adapter_execute_returned_without_verified_readback",
+          },
+        );
+      }
+    } else {
+      return markModelUnknownOutcome(
+        options,
+        `model_readback_mismatch:${options.phase}`,
+        readback,
+      );
+    }
+  } else {
+    options.registry.recordDispatch(options.lease, {
       idempotencyKey,
+      target: options.assignment.alias,
+      receiptPath: null,
+      accepted: false,
+      now: options.now(),
     });
-  } catch {
-    return markModelUnknownOutcome(
-      options,
-      `model_execution_unknown_outcome:${options.phase}`,
-      "adapter_has_no_verified_downstream_readback",
-    );
+    try {
+      result = await options.port.execute(request);
+    } catch {
+      return markModelUnknownOutcome(
+        options,
+        `model_execution_unknown_outcome:${options.phase}`,
+        {
+          status: "mismatch",
+          checkedAt: options.now(),
+          reason: "dispatch_threw_before_verified_downstream_readback",
+        },
+      );
+    }
   }
   if (
     result.alias !== options.assignment.alias ||
@@ -628,7 +777,11 @@ async function executeModel(options: {
     return markModelUnknownOutcome(
       options,
       `provenance_mismatch:${options.phase}`,
-      "model_returned_with_unverified_assignment_provenance",
+      {
+        status: "mismatch",
+        checkedAt: options.now(),
+        reason: "model_returned_with_unverified_assignment_provenance",
+      },
     );
   }
   const receiptIdentity: ModelDispatchIdentity = {
@@ -649,7 +802,11 @@ async function executeModel(options: {
     return markModelUnknownOutcome(
       options,
       `model_receipt_readback_failed:${options.phase}`,
-      "model_returned_without_matching_durable_receipt",
+      {
+        status: "mismatch",
+        checkedAt: options.now(),
+        reason: "model_returned_without_matching_durable_receipt",
+      },
     );
   }
   options.registry.acceptDispatch(options.lease, {
@@ -682,7 +839,10 @@ function markModelUnknownOutcome(
     readonly now: () => string;
   },
   reason: string,
-  readbackReason: string,
+  readback: Extract<
+    ReadbackObservation,
+    { readonly status: "not_found" | "mismatch" }
+  >,
 ): {
   readonly ok: false;
   readonly reason: string;
@@ -691,11 +851,7 @@ function markModelUnknownOutcome(
   const checkedAt = options.now();
   options.registry.markUnknownOutcome(options.lease, {
     reason,
-    readback: {
-      status: "mismatch",
-      checkedAt,
-      reason: readbackReason,
-    },
+    readback,
     now: checkedAt,
   });
   return {
@@ -928,7 +1084,14 @@ function writeHighIntensityRunRecord(
   const temporary = `${record.recordPath}.tmp-${process.pid}-${randomUUID()}`;
   writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`);
   renameSync(temporary, record.recordPath);
-  return record;
+  const readBack = readHighIntensityRunRecord(record.recordPath);
+  if (
+    readBack === undefined
+    || JSON.stringify(readBack) !== JSON.stringify(record)
+  ) {
+    throw new Error("high_intensity_record_readback_failed");
+  }
+  return readBack;
 }
 
 function isHighIntensityRunRecord(

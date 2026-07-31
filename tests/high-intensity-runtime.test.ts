@@ -12,10 +12,12 @@ import type {
 import {
   createHighIntensityRun,
   readHighIntensityRunRecord,
+  type HighIntensityModelReadback,
   type HighIntensityModelPort,
   type HighIntensityModelRequest,
 } from "../src/integration/high-intensity-runtime.ts";
 import { persistModelDispatchReceipt } from "../src/runtime/model-dispatch-receipt.ts";
+import { FileRunRegistry } from "../src/runtime/run-registry.ts";
 import type { HighIntensityInput } from "../src/workflows/high-intensity.ts";
 
 const input: HighIntensityInput = {
@@ -181,6 +183,7 @@ describe("high-intensity runtime", () => {
           requests.push(request);
           return provenance(request, "{not-json");
         },
+        readBack: readBackNotFound,
       },
       now: () => "2026-07-31T01:00:00.000Z",
     });
@@ -263,6 +266,7 @@ describe("high-intensity runtime", () => {
         async execute() {
           throw new Error("secret provider stack trace");
         },
+        readBack: readBackNotFound,
       },
       now: () => "2026-07-31T01:00:00.000Z",
     });
@@ -278,6 +282,125 @@ describe("high-intensity runtime", () => {
     ]);
   });
 
+  test("reconciles an unknown model outcome by receipt read-back without redispatch", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
+    const requests: HighIntensityModelRequest[] = [];
+    const basePort = scriptedPort(requests);
+    let lostResearchResult: Awaited<ReturnType<typeof basePort.execute>> | null =
+      null;
+    let readBacks = 0;
+    const port: HighIntensityModelPort = {
+      async execute(request) {
+        const result = await basePort.execute(request);
+        if (request.phase === "research" && lostResearchResult === null) {
+          lostResearchResult = result;
+          throw new Error("response_lost_after_receipt_persisted");
+        }
+        return result;
+      },
+      async readBack(request) {
+        readBacks += 1;
+        if (request.phase === "research" && lostResearchResult !== null) {
+          return { status: "found", result: lostResearchResult };
+        }
+        return readBackNotFound();
+      },
+    };
+
+    const first = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      source,
+      modelPort: port,
+      now: () => "2026-07-31T01:00:00.000Z",
+    });
+    expect(first.ok).toBe(false);
+    expect(first.record.blockers).toContain(
+      "model_execution_unknown_outcome:research",
+    );
+
+    const recovered = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      source,
+      modelPort: port,
+      now: () => "2026-07-31T01:01:00.000Z",
+    });
+    expect(recovered.ok).toBe(true);
+    expect(recovered.dedupeStatus).toBe("reconciled");
+    expect(readBacks).toBe(1);
+    expect(requests.filter((request) => request.phase === "research")).toHaveLength(
+      1,
+    );
+  });
+
+  test("creates a retry attempt only after a later stage read-back proves not found", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
+    const requests: HighIntensityModelRequest[] = [];
+    const basePort = scriptedPort(requests);
+    const durableResults = new Map<
+      string,
+      Awaited<ReturnType<typeof basePort.execute>>
+    >();
+    let failFirstAuthor = true;
+    let authorExecutions = 0;
+    const port: HighIntensityModelPort = {
+      async execute(request) {
+        if (request.phase === "author" && request.round === 1) {
+          authorExecutions += 1;
+          if (failFirstAuthor) {
+            failFirstAuthor = false;
+            throw new Error("author_response_lost_without_receipt");
+          }
+        }
+        const result = await basePort.execute(request);
+        durableResults.set(request.idempotencyKey, result);
+        return result;
+      },
+      async readBack(request) {
+        const result = durableResults.get(request.idempotencyKey);
+        return result === undefined
+          ? readBackNotFound()
+          : { status: "found", result };
+      },
+    };
+
+    const first = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      source,
+      modelPort: port,
+      now: () => "2026-07-31T01:00:00.000Z",
+    });
+    expect(first.ok).toBe(false);
+    expect(first.record.blockers).toContain(
+      "model_execution_unknown_outcome:author",
+    );
+
+    const recovered = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      source,
+      modelPort: port,
+      now: () => "2026-07-31T01:01:00.000Z",
+    });
+    expect(recovered.ok).toBe(true);
+    expect(recovered.dedupeStatus).toBe("reconciled");
+    expect(authorExecutions).toBe(2);
+    const runId = recovered.record.authority.canonicalRunId;
+    if (runId === null) throw new Error("canonical run id missing");
+    const projection = new FileRunRegistry({
+      rootDir: join(stateDir, "run-registry"),
+    }).readRun(runId);
+    expect(projection?.attempts).toHaveLength(2);
+    expect(projection?.attempts[0]?.status).toBe("unknown_outcome");
+    expect(projection?.attempts[1]?.status).toBe("completed");
+  });
+
   test("empty model output cannot form a receipt and remains an unknown outcome", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
     const result = await createHighIntensityRun({
@@ -289,6 +412,7 @@ describe("high-intensity runtime", () => {
         async execute(request) {
           return provenance(request, "");
         },
+        readBack: readBackNotFound,
       },
       now: () => "2026-07-31T01:00:00.000Z",
     });
@@ -315,6 +439,7 @@ describe("high-intensity runtime", () => {
             family: "wrong-family",
           };
         },
+        readBack: readBackNotFound,
       },
       now: () => "2026-07-31T01:00:00.000Z",
     });
@@ -331,7 +456,8 @@ describe("high-intensity runtime", () => {
       modelPort: scriptedPort([]),
       now: () => "2026-07-31T01:01:00.000Z",
     });
-    expect(repeated.dedupeStatus).toBe("reconciliation_required");
+    expect(repeated.ok).toBe(true);
+    expect(repeated.dedupeStatus).toBe("reconciled");
   });
 
   test("fails closed before model calls when judge is below architecture floor", async () => {
@@ -356,6 +482,7 @@ describe("high-intensity runtime", () => {
           requests.push(request);
           return provenance(request, researchJson());
         },
+        readBack: readBackNotFound,
       },
       now: () => "2026-07-31T01:00:00.000Z",
     });
@@ -481,6 +608,15 @@ function scriptedPort(requests: HighIntensityModelRequest[]): HighIntensityModel
         }),
       );
     },
+    readBack: readBackNotFound,
+  };
+}
+
+async function readBackNotFound(): Promise<HighIntensityModelReadback> {
+  return {
+    status: "not_found",
+    checkedAt: "2026-07-31T01:00:00.000Z",
+    reason: "test_receipt_not_found",
   };
 }
 

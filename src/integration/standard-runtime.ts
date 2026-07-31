@@ -906,7 +906,26 @@ export async function createStandardRun(
       );
     }
 
-    const report = composeRuntimeReport({
+    const reportAssignment = workflowAuthority.authorizeStage({
+      workflowDecision,
+      receipt: workflowDecisionReceipt,
+      stageId: "report",
+    }).roleAssignment;
+    if (
+      reportAssignment.role !== "report_composer"
+      || reportAssignment.provider !== "firstmate"
+    ) {
+      registry.failAttempt(lease, {
+        reason: "report_composer_assignment_invalid",
+        now: now(),
+      });
+      return blocked(
+        { ...base, author, review, reviewAttempts },
+        now,
+        "report_composer_assignment_invalid",
+      );
+    }
+    const composedReport = composeRuntimeReport({
       reviewDocument,
       normalizedInput: decided.normalizedInput,
       routingDecision,
@@ -916,6 +935,16 @@ export async function createStandardRun(
       author,
       review,
     });
+    const report: DecisionReadyReport = {
+      ...composedReport,
+      evidenceLayer: {
+        ...composedReport.evidenceLayer,
+        lineage: [
+          `report_composer:${reportAssignment.alias}:${reportAssignment.resolvedModel}`,
+          ...composedReport.evidenceLayer.lineage,
+        ],
+      },
+    };
     try {
       assertDecisionReadyReport(report);
     } catch (error) {
@@ -1622,7 +1651,15 @@ function writeStandardRecord(record: StandardRunRecord): StandardRunRecord {
   const temporary = `${record.recordPath}.tmp-${process.pid}`;
   writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`);
   renameSync(temporary, record.recordPath);
-  return record;
+  if (record.status !== "completed") return record;
+  const readBack = readStandardRunRecord(record.recordPath);
+  if (
+    readBack === undefined
+    || JSON.stringify(readBack) !== JSON.stringify(record)
+  ) {
+    throw new Error("standard_record_readback_failed");
+  }
+  return readBack;
 }
 
 function resolveStateDir(cwd: string, env: NodeJS.ProcessEnv): string {

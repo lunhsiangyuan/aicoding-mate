@@ -181,9 +181,24 @@ export async function runCodexReviewFromHerdrSelection(
   if (decided.status !== "resolved") {
     return fail("firstmate_decision_issuance_failed");
   }
-  const reviewer = decided.reviewer;
   const workflowDecision = decided.workflowDecision;
   const workflowDecisionReceipt = decided.receipt;
+  const reviewer = workflowAuthority.authorizeStage({
+    workflowDecision,
+    receipt: workflowDecisionReceipt,
+    stageId: "reviewer",
+  }).roleAssignment;
+  const reportComposer = workflowAuthority.authorizeStage({
+    workflowDecision,
+    receipt: workflowDecisionReceipt,
+    stageId: "report",
+  }).roleAssignment;
+  if (
+    reportComposer.role !== "report_composer"
+    || reportComposer.provider !== "firstmate"
+  ) {
+    return fail("firstmate_decision_issuance_failed");
+  }
   const model = reviewer.resolvedModel;
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
@@ -311,6 +326,20 @@ export async function runCodexReviewFromHerdrSelection(
       markReviewUnknown(registry, lease, now, "capsule_persist_failed");
       return fail("capsule_persist_failed");
     }
+    const capsuleHash = sha256(readFileSync(capsulePath, "utf8"));
+    const capsuleReadBack = readCompletedCapsule(
+      capsulePath,
+      capsuleHash,
+      opened.run.runId,
+      dispatchKey,
+    );
+    if (
+      capsuleReadBack === null
+      || capsuleReadBack.capsuleId !== capsuleResult.capsule.capsuleId
+    ) {
+      markReviewUnknown(registry, lease, now, "capsule_readback_failed");
+      return fail("capsule_persist_failed");
+    }
     const current = registry.readRun(opened.run.runId);
     const attempt = current?.attempts.at(-1);
     if (attempt === undefined) {
@@ -323,7 +352,7 @@ export async function runCodexReviewFromHerdrSelection(
         runId: opened.run.runId,
         attemptId: attempt.id,
         artifactPath: capsulePath,
-        artifactHash: sha256(readFileSync(capsulePath, "utf8")),
+        artifactHash: capsuleHash,
       },
       now: now(),
     });

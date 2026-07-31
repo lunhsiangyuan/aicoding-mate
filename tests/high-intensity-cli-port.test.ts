@@ -145,17 +145,18 @@ describe("high-intensity CLI port", () => {
       runner: recordingRunner(calls, "model output"),
     });
 
-    const result = await port.execute({
+    const request = {
       assignment: authorAssignment,
       prompt: "do the work",
       contextId: "ctx-author-1",
-      phase: "author",
+      phase: "author" as const,
       round: 1,
       workflowDecisionId: "wfd_test",
       decisionHash: "1".repeat(64),
-      stageId: "author",
+      stageId: "author" as const,
       idempotencyKey: "dispatch-test",
-    });
+    };
+    const result = await port.execute(request);
 
     expect(calls).toEqual([
       {
@@ -185,6 +186,10 @@ describe("high-intensity CLI port", () => {
       model: "gpt-5.6-sol-high",
     });
     expect(result.receiptPath).toStartWith(stateDir);
+    expect(await port.readBack(request)).toEqual({
+      status: "found",
+      result,
+    });
   });
 
   test("fails closed on missing listed model and failed agent command", () => {

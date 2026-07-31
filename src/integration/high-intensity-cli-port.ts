@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type {
@@ -14,7 +15,11 @@ import type {
   HighIntensityModelRequest,
   HighIntensityModelResult,
 } from "./high-intensity-runtime.ts";
-import { persistModelDispatchReceipt } from "../runtime/model-dispatch-receipt.ts";
+import {
+  modelDispatchReceiptPath,
+  persistModelDispatchReceipt,
+  readModelDispatchReceipt,
+} from "../runtime/model-dispatch-receipt.ts";
 
 export interface HighIntensityCliRunnerResult {
   readonly status: number | null;
@@ -69,6 +74,10 @@ export function createHighIntensityCliPort(
 ): HighIntensityModelPort {
   const env = options.env ?? process.env;
   const runner = options.runner ?? defaultRunner;
+  const receiptRoot = join(
+    resolveStateDir(options.cwd, env),
+    "model-dispatches",
+  );
   return {
     async execute(request: HighIntensityModelRequest): Promise<HighIntensityModelResult> {
       const result = runner(
@@ -107,7 +116,7 @@ export function createHighIntensityCliPort(
         throw new Error("agent_empty_output");
       }
       const receiptPath = persistModelDispatchReceipt({
-        rootDir: join(resolveStateDir(options.cwd, env), "model-dispatches"),
+        rootDir: receiptRoot,
         identity: {
           idempotencyKey: request.idempotencyKey,
           workflowDecisionId: request.workflowDecisionId,
@@ -125,6 +134,43 @@ export function createHighIntensityCliPort(
         model: request.assignment.resolvedModel,
         receiptPath,
       };
+    },
+    async readBack(request) {
+      const receiptPath = modelDispatchReceiptPath(
+        receiptRoot,
+        request.idempotencyKey,
+      );
+      const readback = readModelDispatchReceipt(receiptPath, {
+        idempotencyKey: request.idempotencyKey,
+        workflowDecisionId: request.workflowDecisionId,
+        decisionHash: request.decisionHash,
+        stageId: request.stageId,
+        assignment: request.assignment,
+      });
+      if (readback !== undefined) {
+        return {
+          status: "found",
+          result: {
+            rawOutput: readback.rawOutput,
+            alias: request.assignment.alias,
+            family: request.assignment.family,
+            model: request.assignment.resolvedModel,
+            receiptPath: readback.receipt.receiptPath,
+          },
+        };
+      }
+      const checkedAt = (options.now ?? (() => new Date().toISOString()))();
+      return existsSync(receiptPath)
+        ? {
+            status: "mismatch",
+            checkedAt,
+            reason: "model_dispatch_receipt_identity_or_content_mismatch",
+          }
+        : {
+            status: "not_found",
+            checkedAt,
+            reason: "model_dispatch_receipt_not_found",
+          };
     },
   };
 }
