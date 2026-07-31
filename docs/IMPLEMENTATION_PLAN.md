@@ -1,4 +1,4 @@
-# v0.1 實作計畫
+# v0.2 實作計畫
 
 這份計畫以使用者可觀察的行為為交付單位，不以「程式碼存在」當作完成。
 
@@ -15,7 +15,7 @@
 
 - 所有 YAML 可解析。
 - README、spec、架構與設定互相連結。
-- v0.1 功能、非目標與驗收情境一致。
+- v0.2 功能、非目標與驗收情境一致。
 
 ## Phase 1：Control Contracts
 
@@ -83,7 +83,7 @@
 - 「帶回計畫」能被主對話判斷成新增或修改，並在執行前複誦。
 - Codex 原生批註回到正確來源 task。
 
-## Phase 5：Report、QA 與公開 v0.1
+## Phase 5：Report、QA 與公開 v0.2
 
 交付：
 
@@ -108,7 +108,7 @@
 4. 先完成文字化 Context／Review Capsule，再加入 UI handoff。
 5. 每個 phase 都要能被真實使用，不能只以測試綠燈宣告完成。
 
-## v0.1 後候選
+## v0.2 後候選
 
 - Cursor／Gemini production adapter。
 - 視覺化 workflow editor。
@@ -116,7 +116,7 @@
 - 多使用者、團隊政策與預算治理。
 - 原生文件／簡報 annotation 整合。
 
-這些項目不阻擋 v0.1。
+這些項目不阻擋 v0.2。
 
 ## v0.2 核心交付
 
@@ -165,7 +165,7 @@ Blocked by：V2-01 的 decision envelope identity。
 
 ### V2-03 Authority migration gate
 
-Status：核心受管 workflow 與 signed authority 完成；保留新 decision schema 的實機回歸證據作 release gate。
+Status：完成核心 release evidence；Native Codex 自動 capsule 仍受 `interrupted` turn 的已知 operational limitation 約束。
 
 Blocked by：V2-01、V2-02。
 
@@ -177,3 +177,4 @@ Blocked by：V2-01、V2-02。
 - duplicate Standard dispatch 的回歸測試與實機證據。
 - 新 v0.2 record 只在 decision／registry／artifact strict read-back 通過後標示 verified。
 - 舊的未簽章 decision record 保持不可驗證，不回填 `firstmate_verified`。
+- 實機證據封存在 [QA_EVIDENCE.md](QA_EVIDENCE.md)：Standard duplicate coalesce、原 decision reconciliation、Herdr worker/pane read-back、Codex task handoff 與 interrupted fail-closed。

@@ -181,7 +181,7 @@ sequenceDiagram
 
 ## 5. Codex Review Handoff
 
-v0.1 的目標是直接借用 Codex 原生介面。以下流程擬以官方文件描述的 app-server、deep link 與 review surfaces 實作；每一項能力都必須先通過本專案的 runtime capability probe，完整往返也必須通過 end-to-end 驗證：
+v0.2 直接借用 Codex 原生介面。流程使用官方 Codex App Server 的 `thread/start`、`review/start` 與 `thread/read`；每一項能力都必須先通過 runtime capability probe，完整往返也必須通過 end-to-end 驗證：
 
 1. Architect 產生 Context Capsule 與 review 指令。
 2. Codex adapter 使用 app-server 建立／fork task。
@@ -191,7 +191,7 @@ v0.1 的目標是直接借用 Codex 原生介面。以下流程擬以官方文�
 6. Adapter 讀取結果並建立 Review Capsule。
 7. 主 Architect 複誦後整合。
 
-不把 Codex 私有 UI component 複製進 Herdr；若 Codex 原生介面不可用，v0.1 的 fallback 是文字化 Review Capsule，不自行建立第二套 annotation editor。
+不把 Codex 私有 UI component 複製進 Herdr；若 Codex 原生介面不可用，fallback 是文字化 Review Capsule，不自行建立第二套 annotation editor。若 detached review turn 被標成 `interrupted`，stable start receipt 仍可證明 thread 已建立，但不能冒充完成 capsule；目前由使用者在原 Codex task 繼續，受管自動 round-trip 保持未完成。
 
 ## 6. 權限與風險分級
 
@@ -308,5 +308,7 @@ readBack(dispatchReceipt | idempotencyKey) -> RuntimeObservation
 - Standard 的原始目標以明文唯讀信封交給 Quick。scope gate 區分「討論危險動作」與「要求執行危險動作」；不使用 base64 或其他包裝繞過檢查。
 - Context Branch 不派模型角色，只保存 selection lineage、白話解釋與一次性確認 handoff；因此不建立第二個 workflow authority。
 - 目前 Run Registry 使用 filesystem lease、atomic write 與 append-only hash chain。程序在「外部已接受、receipt 尚未持久化」期間中斷時會 fail closed；只有 read-back 證明未派出才允許新 attempt。
+- event append 與 projection rename 之間若中斷，只有「正好多一筆、chain 完整、payload 可 deterministic replay」的尾端 event 會自動套用；不完整最後一行也只在 prefix 完全吻合時截除。多 event ahead、tamper 或未知 event type 不修復。
 - 這不是跨主機 distributed transaction，也不宣稱 provider 具備 exactly-once；外部 provider 是否支援 idempotency 仍由 receipt/read-back 證據決定。
 - Firstmate signing identity 是本機單一使用者 trust anchor，不是遠端硬體 attestation；能證明本 authority store 發行與檔案未遭修改，但不宣稱抵抗已取得本機私鑰的攻擊者。
+- CLI Adapter record 的 model provenance 是「Firstmate 下令的 assignment 與本機 adapter receipt」，不是 provider 對實際模型執行的遠端 attestation。`codex-session-default` 也是 session-resolved sentinel，不應解讀成精確 model ID。

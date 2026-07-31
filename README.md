@@ -43,10 +43,10 @@ AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herd
 - 報告使用 recall-first 雙層格式，另設 Coverage Review 找出遺漏。
 - 選取文字後可開啟 Context Branch，先白話說明，再按需深入。
 - Branch 內容可帶回原主對話，由主對話判斷新增或修改任務並複誦。
-- `Open in Codex Review` 直接使用 Codex 原生 review／annotation 介面。
+- `Open in Codex Review` 由 Herdr 建立 Codex 原生 review task；只有同一 review turn 完成並可讀回時才產生 Review Capsule。
 - 沿用既有 Claude Code／Codex skills 與 adapters，不改寫內部 prompt。
 
-先從 [繁體中文使用說明](docs/USER_GUIDE.zh-TW.md) 開始。完整需求見 [產品規格](docs/SPEC.md)，系統邊界見 [架構說明](docs/ARCHITECTURE.md)，交付順序見 [實作計畫](docs/IMPLEMENTATION_PLAN.md)，Codex review handoff 現況見 [Codex Review Handoff 可行性](docs/CODEX_REVIEW_FEASIBILITY.md)。
+先從 [繁體中文使用說明](docs/USER_GUIDE.zh-TW.md) 開始。完整需求見 [產品規格](docs/SPEC.md)，系統邊界見 [架構說明](docs/ARCHITECTURE.md)，實機證據見 [v0.2 QA Evidence](docs/QA_EVIDENCE.md)，Codex review handoff 現況見 [Codex Review Handoff 可行性](docs/CODEX_REVIEW_FEASIBILITY.md)。
 
 ## 設定方式
 
@@ -125,6 +125,8 @@ bun bin/aicoding-mate open --entrypoint research
 
 主畫面只顯示結論、影響、下一步與 evidence 路徑；完整模型輸出、未知項目與 lineage 保留在 durable record。
 
+目前實機已證明 Herdr 可以建立 Codex review task 並開啟相同 thread。此機器上的 detached review turn 可能被 Codex 標成 `interrupted`；此時系統保留 stable start receipt 與 canonical run，但不產生假 capsule，也不自動重派。使用者可在已開啟的 Codex task 繼續操作；自動 round-trip 仍以同一受管 review turn `completed` 為必要條件。
+
 ## v0.2 Authority
 
 v0.2 落實兩個 authority：
@@ -134,18 +136,20 @@ v0.2 落實兩個 authority：
 
 Firstmate decision 不再只靠 record 裡的字串宣稱來源。控制平面會把 immutable decision 寫入 Firstmate authority store，以本機 Ed25519 identity 簽署 receipt，並在任何 Adapter 啟動前重新讀回驗簽。模型、named-skill fallback 與 debugging gate 都屬於 signed `executionPolicy`；Adapter 不可用環境變數覆寫 exact assignment。
 
-受管 workflow 的 durable record 只有在 decision signature、registry、artifact 與 lineage 全部讀回一致後，才標示 `firstmate_verified` 與 `canonical_run_registry_verified`。逾時或 receipt 遺失會進入 `unknown_outcome`，先查既有結果，不直接重派。詳細契約與限制見 [產品規格第 9 節](docs/SPEC.md#9-v02-核心兩個-authority)。
+受管 workflow 的 durable record 只有在 decision signature、registry、artifact 與 lineage 全部讀回一致後，才標示 `firstmate_verified` 與 `canonical_run_registry_verified`。event 已 append、projection 尚未落地的唯一尾端 torn write 會由 deterministic replay 修復；不完整最後一行只在完整 prefix 與 projection 一致時截除。其餘逾時或 receipt 遺失會進入 `unknown_outcome`，先查既有結果，不直接重派。詳細契約與限制見 [產品規格第 9 節](docs/SPEC.md#9-v02-核心兩個-authority)。
 
 安裝或 link Herdr plugin 代表在本機以使用者權限執行此 repository 的程式碼；請先檢查 `herdr-plugin.toml`、`bin/aicoding-mate` 與 `src/`。
 
 ## 上游相容性基準
 
-初始規格以以下版本點作為可重現的研究基準，不代表已完成 runtime 驗證：
+初始規格以以下版本點作為可重現的相容性目標：
 
 - Firstmate：`kunchenguid/firstmate@e595611291247368b982eb729097c54f2b45aa78`
 - Herdr：`herdrdev/herdr@v0.7.5`
 
 Firstmate 採 MIT License；Herdr 與本 repository 採 Apache License 2.0。AI Coding Mate 初期透過公開整合面使用兩者，不複製或修改上游主程式。
+
+2026-07-31 的實機 gate 使用本機 Herdr `0.7.3`、protocol `16`，client/server 回報 `compatible: true`。這證明目前安裝可運作，不等於已把 runtime pin 升級到 `v0.7.5`。
 
 ## 專案原則
 

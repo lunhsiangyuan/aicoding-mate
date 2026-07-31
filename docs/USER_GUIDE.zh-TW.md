@@ -128,12 +128,14 @@ Research 會保留 discovery denominator，並把內容區分為：
 在 Herdr 選取內容後執行「Open in Codex Review」。系統會：
 
 1. 重新解析來源 Firstmate task/run。
-2. 建立 detached Codex review thread。
+2. 建立 detached Codex review thread，並保存 stable start receipt。
 3. 等待 app-server 回報同一 review turn completed。
 4. 讀回 review 文字並寫入 Review Capsule。
 5. 請求 macOS 開啟 `codex://threads/<thread-id>`。
 
-產品可以確認 review thread 與 durable capsule，但目前無法由 CLI 證明桌面視窗最後停在同一 thread，因此 UI launch 會標示 `requested_unverified`，不會誤寫成已觀測成功。
+若 review turn 被 Codex 標成 `interrupted`，AI Coding Mate 會保留同一 thread 與 canonical run，回報 `review_not_completed`，不會自動建立第二個 review。你可以直接在已開啟的 Codex task 繼續；但人工 follow-up 是新的 turn，目前不會被偽裝成原受管 turn 的 capsule。
+
+CLI 只能把 desktop deep-link 標成 `requested_unverified`。2026-07-31 的實機 QA 另由 Codex desktop connector 觀測到同一 thread 已成功打開；這是 QA evidence，不是 CLI 本身的永久能力保證。
 
 ## 模型設定
 
@@ -199,7 +201,9 @@ state/aicoding-mate/run-registry/runs/<canonical-run-id>/
 └── lease/lease.json
 ```
 
-`projection.json` 是目前 canonical 狀態；`events.jsonl` 是不可覆寫的 hash-chain 歷史。若狀態是 `unknown_outcome`，代表外部工作可能已被接受但 receipt 未完整保存，系統會先 read back，不會冒險派第二次。
+`projection.json` 是目前 canonical 狀態；`events.jsonl` 是 append-only hash-chain 歷史。若 event 比 projection 正好多一筆且 chain／payload 可完整驗證，系統會 deterministic replay；若最後只有一行不完整 JSON，只有在前綴與 projection 完全一致時才截除。多筆 event ahead、hash tamper 或 schema 不明一律 fail closed。
+
+若狀態是 `unknown_outcome`，代表外部工作可能已被接受但 receipt 未完整保存，系統會先 read back，不會冒險派第二次。缺少本機 receipt 不代表 provider 已證明 `not_found`，因此不會自動重派。
 
 受管 workflow 的結果會帶兩個 authority 標記：
 
@@ -225,6 +229,7 @@ bun bin/aicoding-mate doctor
 - `agent_list_models_failed`：Cursor Agent CLI 不可用或未登入。
 - `model_not_listed`：設定的 model 不在目前訂閱可用清單。
 - `app_server_unavailable`：Codex app-server 未啟動、timeout 或協定回讀失敗。
+- `review_not_completed`：Codex thread 已建立，但原受管 review turn 未完成或被中斷；請打開既有 task 檢查，不要重新點擊製造另一個 intent。
 - `firstmate_source_run_not_found`：selection 不屬於可重新解析的 Firstmate source run。
 - `durable_readback_failed`：record 未成功寫入或內容不符合 schema。
 - `run_lease_unavailable`：同一 canonical run 已有另一個程序持有執行權；目前程序不會重複派工。
@@ -233,3 +238,5 @@ bun bin/aicoding-mate doctor
 - `author_scope_invalid`：Standard 原始目標包含可執行寫入或外部動作；請改成唯讀分析，或另建 implementation task。
 
 系統遇到這些狀態會 fail closed，不會把部分完成包裝成成功。
+
+Herdr selection action 正式傳入的是 `HERDR_PLUGIN_CONTEXT_JSON`。一般使用者不需要手動設定；只有從 terminal 重現 action 時才會看到這個變數。`HERDR_ACTION_CONTEXT_JSON` 不是目前 plugin contract。

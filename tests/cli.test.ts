@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { main } from "../src/cli.ts";
@@ -116,7 +122,7 @@ describe("cli", () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-cli-fm-home-"));
     const binDir = join(root, "bin");
     const stateDir = join(root, "state");
-    const fmHome = join(root, "fm-home");
+    const fmHome = join(stateDir, "fm-home");
     mkdirSync(binDir);
     const agentPath = join(binDir, "agent");
     writeFileSync(
@@ -169,5 +175,26 @@ describe("cli", () => {
     expect(buffer.stdout).toContain("對抗式架構審查");
     expect(buffer.stdout).toContain("證據層：");
     expect(buffer.stdout).not.toContain("BLOCKED");
+
+    const recordName = readdirSync(join(stateDir, "high-intensity-runs")).find(
+      (name) => name.endsWith(".json"),
+    );
+    expect(recordName).toBeDefined();
+    if (recordName === undefined) throw new Error("high record missing");
+    const readBuffer = new BufferIO();
+    const readCode = await main(
+      [
+        "read-run",
+        join(stateDir, "high-intensity-runs", recordName),
+      ],
+      readBuffer.io({
+        ACM_STATE_DIR: stateDir,
+      }),
+    );
+    expect(readCode).toBe(0);
+    expect(readBuffer.stdout).toContain(
+      '"workflowAuthority": "firstmate_verified"',
+    );
+    expect(readBuffer.stdout).toContain('"ok": true');
   });
 });

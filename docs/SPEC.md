@@ -1,4 +1,4 @@
-# AI Coding Mate v0.1 產品規格
+# AI Coding Mate v0.2 產品規格
 
 - 狀態：Approved
 - 日期：2026-07-30
@@ -25,7 +25,7 @@ AI Coding Mate 要讓使用者以架構師的高度操作多模型 coding agents
 
 ## 2. 成功體驗
 
-一個成功的 v0.1 任務應該是：
+一個成功的 v0.2 任務應該是：
 
 1. 使用者用自然語言描述目標。
 2. Architect 只詢問會改變產品結果的問題。
@@ -160,13 +160,13 @@ Coverage Review 必須另行檢查：
 - Codex 可在隔離工作區完成修訂。
 - 結果以 Review Capsule 回到原主對話。
 - 主 Architect 複誦收到的批註、修改目標與未解決問題後再整合。
-- v0.1 不自行重做 Codex annotation UI。
+- v0.2 不自行重做 Codex annotation UI。
 - 上述完整 handoff 在通過 runtime capability probe 與往返驗證前，屬於目標能力，不得標示為 production-ready。
 
 ### FR-10 Skill 與 Adapter Registry
 
 - 沿用現有 Claude Code／Codex skills。
-- v0.1 只登錄、包裝與派工，不搬移、不統一或改寫其內部 prompt。
+- v0.2 只登錄、包裝與派工，不搬移、不統一或改寫其內部 prompt。
 - 每個 skill 對上層只公開能力契約：
   - 能做什麼。
   - 適合的模型角色。
@@ -211,7 +211,7 @@ Coverage Review 必須另行檢查：
 - Firstmate、Herdr、模型供應商與 UI 都透過明確 contract 連接。
 - 更換 adapter 不得改變 Decision Policy 與 Workflow Recipe 的語意。
 
-## 6. v0.1 非目標
+## 6. v0.2 非目標
 
 - 永久 fork 或直接修改 Firstmate main。
 - 自行建立完整 agent runtime。
@@ -248,9 +248,9 @@ Coverage Review 必須另行檢查：
 
 Research 模型不可用時自動 fallback；Architect／Judge 只有在所有候選都低於能力下限時才詢問使用者。
 
-## 8. v0.1 完成定義
+## 8. v0.2 完成定義
 
-v0.1 必須同時具備：
+v0.2 必須同時具備：
 
 - 可執行的 `quick`、`standard`、`adversarial`、`research` recipes。
 - Firstmate-on-Herdr 的最小 end-to-end task。
@@ -260,6 +260,8 @@ v0.1 必須同時具備：
 - Codex 原生 review handoff。
 - Recall-first 雙層報告與 Coverage Review。
 - 每項驗收情境具有可回讀的 runtime evidence。
+- Firstmate 是唯一 Workflow Authority，Adapter 不做 routing、fallback、retry 或 report 決策。
+- canonical Run Registry 具備 stable idempotency、lease、strict read-back、lineage 與可證明的單尾端 torn-write recovery。
 
 ## 9. v0.2 核心：兩個 Authority
 
@@ -319,6 +321,8 @@ Run Registry 是 execution truth 的唯一持久來源：
 - Standard、Adversarial、Research 與 Codex Review 都寫入同一種 canonical Run Registry。
 - 同一 intent 的 active 或 completed 重送會 coalesce；不再建立第二個外部工作。
 - filesystem lease 保護跨程序 writer；event log 使用 append-only hash chain，projection 與完成 artifact 會 strict read-back。
+- 正好多一筆且可驗證的 tail event 可 deterministic replay；不完整最後一行只在完整 prefix 與 projection 一致時截除，其餘 lineage 異常 fail closed。
 - Quick 作為 Firstmate 下游 primitive 接收上層 idempotency key；Context Branch 是一次性 lineage handoff，不是自主 workflow。
 - `unknown_outcome` 只有在 read-back 為 `not_found` 後才能開新 attempt；在 provider 無法證明未接受時保持 fail closed。
 - signing identity 預設位於 `<state-dir>/firstmate-authority/identity/`；若 runtime 有 `FM_HOME`，則使用 `<FM_HOME>/aicoding-mate-authority/`。私鑰權限為本機使用者 `0600`。
+- Native Codex Review 的「task 建立／UI handoff」與「review turn completed／capsule read-back」分開驗收；`interrupted` 不算完成，也不觸發未授權的自動重派。

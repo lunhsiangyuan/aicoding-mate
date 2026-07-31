@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { runDoctor } from "./probe.ts";
@@ -18,6 +18,7 @@ import {
 import {
   createStandardRun,
   markStandardRunPresented,
+  readStandardRunRecord,
   renderStandardText,
 } from "./integration/standard-runtime.ts";
 import {
@@ -683,14 +684,74 @@ function runReadRunCommand(args: string[], io: CliIO): number {
     io.stderr.write("read-run 需要一個 run record JSON 路徑。\n");
     return 2;
   }
-  const record = readRunRecord(resolve(io.cwd, args[0]));
-  if (!record) {
-    io.stderr.write(`無法讀取 run record: ${args[0]}\n`);
-    return 1;
+  const recordPath = resolve(io.cwd, args[0]);
+  const quickRecord = readRunRecord(recordPath);
+  if (quickRecord) {
+    const consistency = verifyPaneRecordConsistency(quickRecord);
+    io.stdout.write(
+      `${JSON.stringify({ record: quickRecord, consistency }, null, 2)}\n`,
+    );
+    return consistency.ok ? 0 : 1;
   }
-  const consistency = verifyPaneRecordConsistency(record);
-  io.stdout.write(`${JSON.stringify({ record, consistency }, null, 2)}\n`);
-  return consistency.ok ? 0 : 1;
+  for (const trustedAuthorityRoot of readRunAuthorityRoots(io)) {
+    const standardRecord = readStandardRunRecord(
+      recordPath,
+      trustedAuthorityRoot,
+    );
+    if (standardRecord) {
+      const consistency = {
+        ok:
+          standardRecord.status === "completed"
+          && standardRecord.claims.reportReadbackMatchesPane,
+        reason:
+          standardRecord.status !== "completed"
+            ? `standard_status_${standardRecord.status}`
+            : standardRecord.claims.reportReadbackMatchesPane
+            ? null
+            : "standard_pane_readback_missing",
+      };
+      io.stdout.write(
+        `${JSON.stringify({ record: standardRecord, consistency }, null, 2)}\n`,
+      );
+      return consistency.ok ? 0 : 1;
+    }
+    const highIntensityRecord = readHighIntensityRunRecord(
+      recordPath,
+      trustedAuthorityRoot,
+    );
+    if (highIntensityRecord) {
+      const consistency = {
+        ok: highIntensityRecord.status === "completed",
+        reason:
+          highIntensityRecord.status === "completed"
+            ? null
+            : `high_intensity_status_${highIntensityRecord.status}`,
+      };
+      io.stdout.write(
+        `${JSON.stringify(
+          { record: highIntensityRecord, consistency },
+          null,
+          2,
+        )}\n`,
+      );
+      return consistency.ok ? 0 : 1;
+    }
+  }
+  io.stderr.write(`無法讀取 run record: ${args[0]}\n`);
+  return 1;
+}
+
+function readRunAuthorityRoots(io: CliIO): readonly string[] {
+  const root = stateDir(io);
+  return Array.from(
+    new Set([
+      resolveFirstmateAuthorityRoot(root, io.env),
+      resolveFirstmateAuthorityRoot(root, {
+        ...io.env,
+        FM_HOME: join(root, "fm-home"),
+      }),
+    ]),
+  );
 }
 
 function runDoctorCommand(args: string[], io: CliIO): number {
