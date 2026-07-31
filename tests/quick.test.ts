@@ -212,6 +212,23 @@ describe("quick workflow", () => {
       expect(codexArgs).toContain("--model\ngpt-5.6-sol");
       expect(codexArgs).not.toContain("--dangerously-bypass-approvals-and-sandbox");
 
+      writeFileSync(codexArgsLog, "");
+      const defaultModelAdapter = spawnSync(
+        join(stateDir, "toolchain", "bin", "codex"),
+        ["--dangerously-bypass-approvals-and-sandbox", "prompt"],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            FM_HOME: join(stateDir, "fm-home"),
+            ACM_CODEX_ARGS_LOG: codexArgsLog,
+            ACM_EXACT_ASSIGNMENT_MODEL: "codex-session-default",
+          },
+        },
+      );
+      expect(defaultModelAdapter.status).toBe(0);
+      expect(readFileSync(codexArgsLog, "utf8")).not.toContain("--model");
+
       const recordPath = result.record.recordPath;
       expect(recordPath).toBeString();
       if (!recordPath) throw new Error("record path missing");
