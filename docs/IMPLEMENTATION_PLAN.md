@@ -183,7 +183,7 @@ Depends on：V2-01、V2-02（已實作）。
 
 ### V3-01 Unified Mate console
 
-Status：implemented，等待 release-level Herdr surface evidence。
+Status：implemented；current-pane launcher 與 pre-dispatch graph 已通過 Herdr surface evidence。
 
 交付：
 
@@ -191,5 +191,7 @@ Status：implemented，等待 release-level Herdr surface evidence。
 - 純函式 slash parser 與 bounded context state。
 - `/quick`、`/standard`、`/expert`、`/research`、`/learn` 重用既有 workflows。
 - `/help`、`/status`、`/doctor`、`/quit` 控制指令。
-- `open --mode` 只設定同一 pane 的起始偏好。
+- Herdr shell 的 `Ari` launcher 直接佔用 current pane，`/quit` 回到 shell。
+- 每個 `run` action 在 dispatcher 前顯示 mode-level ASCII workflow graph。
+- `open --mode` 降級為 overlay 相容入口。
 - 舊 direct recipe commands 保留給 automation，但不再作為一般使用導覽。

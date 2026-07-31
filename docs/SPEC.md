@@ -333,11 +333,12 @@ Run Registry 是 execution truth 的唯一持久來源：
 
 ## 10. v0.3 單一 Mate 入口
 
-### FR-14 單一主 pane
+### FR-14 Herdr current-pane 單一入口
 
-- Herdr manifest 只暴露一個一般使用主 pane：`mate`。
-- Quick、Standard、Expert、Research、Learn 必須由同一 pane 的 slash command 切換，不得要求使用者記住多個 entrypoint。
-- `aicoding-mate open --mode <mode>` 只能預選初始模式，仍須開啟 `mate`。
+- `aicoding-mate link` 必須安裝可在 Herdr shell 解析的 `Ari` launcher。
+- 使用者輸入 `Ari` 後，必須直接在目前 pane 進入互動 console，不建立預設 tab；`/quit` 回到原 shell。
+- Quick、Standard、Expert、Research、Learn 必須由同一 console 的 slash command 切換，不得要求使用者記住多個 entrypoint。
+- `aicoding-mate open --mode <mode>` 保留為 automation 相容入口，預設 placement 為 overlay。
 - Context Branch 與 Codex Review 是選取內容後的輔助 action，不是平行主入口。
 
 ### FR-15 模式與 authority 分離
@@ -349,13 +350,16 @@ Run Registry 是 execution truth 的唯一持久來源：
 - Firstmate decision、scope validation、run identity 與 worker input 只能使用 `currentTask`；歷史內容不得以 prompt envelope 或原文自動重新注入。
 - 歷史決策若要成為新任務的一部分，必須由使用者在本輪複誦，或經已確認的 Context Capsule 帶回後重新通過 scope gate。
 - 關閉 pane 可清除短期 context；durable decision、run、artifact 與 lineage 不得受影響。
+- 任何 `run` action 必須在呼叫 dispatcher 前顯示對應模式的 ASCII workflow graph；單純切換模式與控制指令不得顯示假派工圖。
+- graph 只能呈現 recipe 的角色與階段，不得假造尚未由 Firstmate 決定的 exact model assignment。
 
 ### v0.3 驗收
 
-1. `open` 未指定 mode 時開啟 `mate` 並以 Standard 起始。
-2. `open --mode expert` 仍開啟 `mate`，並傳入 `ACM_INITIAL_MODE=expert`。
-3. `/expert` 只切換模式；`/expert <任務>` 切換後立即走 adversarial workflow。
-4. `/learn <內容>` 先產生 architect-first 分層任務，再走 Standard workflow。
-5. `/help`、`/status`、`/doctor`、未知 slash command 與 `/quit` 都不會誤派模型。
-6. 第五個完成回合加入後，短期 context 只保留最近四輪。
-7. 第二輪 dispatch 的 task／decision identity 不包含第一輪 request 或 summary；第一輪只存在於 `ui_continuity_only` metadata。
+1. 在 Herdr shell 輸入 `Ari`，同一 pane 顯示 Standard prompt，pane 數量不增加。
+2. `/quit` 結束 Ari 並回到同一個 Herdr shell。
+3. `/expert` 只切換模式；`/expert <任務>` 先顯示 adversarial graph，再走 adversarial workflow。
+4. `/learn <內容>` 先顯示 Learn graph、產生 architect-first 分層任務，再走 Standard workflow。
+5. graph 在 dispatcher 呼叫前已可見，且不宣稱 exact model assignment。
+6. `/help`、`/status`、`/doctor`、未知 slash command 與 `/quit` 都不會誤派模型或顯示 workflow graph。
+7. 第五個完成回合加入後，短期 context 只保留最近四輪。
+8. 第二輪 dispatch 的 task／decision identity 不包含第一輪 request 或 summary；第一輪只存在於 `ui_continuity_only` metadata。

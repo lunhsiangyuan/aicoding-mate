@@ -216,6 +216,23 @@ export function renderMateConsoleStatus(state: MateConsoleState): string {
     + ` context_turns=${state.context.length}`;
 }
 
+export function renderMateWorkflowGraph(mode: MateMode): string {
+  const graph = mode === "quick"
+    ? "[你] --> [Firstmate] --> [快速 Scout] --> [Read-back] --> [摘要]"
+    : mode === "standard"
+    ? "[你] --> [Firstmate] --> [Author] --> [Reviewer] --> [收斂] --> [報告]"
+    : mode === "expert"
+    ? "[你] --> [Firstmate] --> [Author] <--> [Challenger] --> [Judge] --> [報告]"
+    : mode === "research"
+    ? "[你] --> [Firstmate] --> [廣搜] --> [Coverage] --> [Judge] --> [報告]"
+    : "[你] --> [Firstmate] --> [白話 Author] --> [Reviewer] --> [分層說明]";
+  return [
+    `派工前 workflow 預覽（${mode}，尚未執行）：`,
+    graph,
+    "若通過 scope gate，Firstmate 將依當下可用模型決定實際派工。",
+  ].join("\n");
+}
+
 function normalizeMateMode(value: string | undefined): MateMode | undefined {
   const normalized = value?.trim().toLowerCase();
   if (normalized === "adversarial") return "expert";

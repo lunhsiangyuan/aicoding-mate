@@ -10,29 +10,25 @@ Ari 是 Herdr 裡的一個架構控制入口：
 
 介面與文件稱它為 **Ari**。指令仍使用 `aicoding-mate`；這只是穩定的技術名稱，不代表 Herdr 裡還有第二個產品入口。
 
-v0.3 只有一個 Herdr 主入口；Quick、Standard、Expert、Research 與 Learn 都在同一個 pane 內切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
+v0.3.2 只有一個 Herdr 主入口：在 Herdr shell 輸入 `Ari`，直接於目前 pane 進入；Quick、Standard、Expert、Research 與 Learn 都在同一處切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
 
-## 安裝與從 Herdr 開啟
+## 安裝與從 Herdr 進入
 
 在 repository 內執行：
 
 ```bash
 bun install
 bun bin/aicoding-mate link
-bun bin/aicoding-mate open
+Ari
 ```
 
-若希望開啟時先選好模式：
+`link` 會同時安裝 Herdr plugin 與 `Ari` launcher。以後只要在任一 Herdr shell 輸入：
 
 ```bash
-bun bin/aicoding-mate open --mode quick
-bun bin/aicoding-mate open --mode standard
-bun bin/aicoding-mate open --mode expert
-bun bin/aicoding-mate open --mode research
-bun bin/aicoding-mate open --mode learn
+Ari
 ```
 
-這五個指令都開啟同一個 `Ari` pane，只改變初始模式。
+它會在目前 pane 進入 Standard；不會另開 tab。輸入 `/quit` 後回到原 Herdr shell。舊的 `bun bin/aicoding-mate open --mode <mode>` 仍可供 automation 使用，但預設只開 overlay。
 
 第一次使用 Firstmate 前：
 
@@ -69,6 +65,16 @@ bun bin/aicoding-mate bootstrap-firstmate
 ```
 
 只輸入 `/expert` 會切換模式，不會派工；之後直接輸入文字即可。輸入 `/expert 找出這個方案的反例` 則會切換並立刻執行。
+
+只要本輪會派 agent，Ari 會在 dispatcher 啟動前先顯示 ASCII workflow graph，例如：
+
+```text
+派工前 workflow 預覽（expert，尚未執行）：
+[你] --> [Firstmate] --> [Author] <--> [Challenger] --> [Judge] --> [報告]
+若通過 scope gate，Firstmate 將依當下可用模型決定實際派工。
+```
+
+graph 顯示角色與執行順序，不預先假裝知道動態模型分配；只切換模式、查看 `/status` 或 `/help` 時不會出圖。
 
 同一 pane 會保留最近四輪摘要作為畫面內的短期 continuity。系統把本輪 `currentTask` 和歷史 `continuityContext` 分開：只有本輪文字會進入 Firstmate decision、scope gate、run identity 與 worker。舊回合不會被暗中當成新指令；如果新任務確實需要沿用某項決策，請在本輪用一句話複誦，或用 Context Branch 經確認後帶回。關閉 pane 後不保留這段短期 continuity；正式 run、evidence 與 lineage 仍在 Run Registry。
 

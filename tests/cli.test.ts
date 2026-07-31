@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readlinkSync,
   readFileSync,
   readdirSync,
   writeFileSync,
@@ -102,6 +104,7 @@ describe("cli", () => {
       .split("\n");
     expect(defaultArgs).toContain("mate");
     expect(defaultArgs).toContain("ACM_INITIAL_MODE=standard");
+    expect(defaultArgs).toContain("overlay");
 
     const code = await main(
       ["open", "--mode", "expert", "--placement", "tab"],
@@ -179,6 +182,70 @@ describe("cli", () => {
       "mode=standard completed_turns=1 context_turns=1",
     );
     expect(buffer.stdout).toContain("Ari 已離開");
+  });
+
+  test("pane shows the workflow graph before calling the dispatcher", async () => {
+    const buffer = new BufferIO();
+    const inputs = ["/expert 找出架構反例", "/quit"];
+    let outputAtDispatch = "";
+    const code = await conductMateConsole(
+      buffer.io(),
+      async () => inputs.shift() ?? "/quit",
+      async (_mode, _request, io) => {
+        outputAtDispatch = buffer.stdout;
+        io.stdout.write("結論：完成對抗式審查。\n");
+        return 0;
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(outputAtDispatch).toContain("派工前 workflow 預覽");
+    expect(outputAtDispatch).toContain("[Author] <--> [Challenger]");
+    expect(buffer.stdout.indexOf("派工前 workflow 預覽")).toBeLessThan(
+      buffer.stdout.indexOf("結論：完成對抗式審查。"),
+    );
+  });
+
+  test("Ari launcher enters the inline console when invoked without arguments", () => {
+    const result = spawnSync(process.execPath, ["bin/Ari"], {
+      cwd: process.cwd(),
+      env: { ...process.env, HERDR_ENV: "1" },
+      input: "/status\n/quit\n",
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Ari\n目前模式：standard");
+    expect(result.stdout).toContain("mode=standard");
+  });
+
+  test("link installs the Ari launcher into the configured user bin", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-link-"));
+    const herdrPath = join(root, "herdr");
+    const capturePath = join(root, "args.txt");
+    const binDir = join(root, "bin");
+    writeFileSync(
+      herdrPath,
+      "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ACM_CAPTURE_PATH\"\n",
+      { mode: 0o755 },
+    );
+    chmodSync(herdrPath, 0o755);
+    const buffer = new BufferIO();
+    const code = await main(
+      ["link"],
+      buffer.io({
+        ...process.env,
+        HERDR_BIN_PATH: herdrPath,
+        ACM_CAPTURE_PATH: capturePath,
+        ACM_USER_BIN_DIR: binDir,
+      }),
+    );
+
+    const launcherPath = join(binDir, "Ari");
+    expect(code).toBe(0);
+    expect(lstatSync(launcherPath).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(launcherPath)).toBe(join(process.cwd(), "bin", "Ari"));
+    expect(buffer.stdout).toContain("在 Herdr shell 輸入 `Ari`");
   });
 
   test("pane keeps prior turns as local continuity without redispatching them", async () => {

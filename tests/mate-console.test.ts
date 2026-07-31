@@ -6,6 +6,7 @@ import {
   parseMateConsoleInput,
   recordMateConsoleTurn,
   renderMateConsoleStatus,
+  renderMateWorkflowGraph,
   summarizeMateOutput,
 } from "../src/mate-console.ts";
 
@@ -106,6 +107,17 @@ describe("single Mate console", () => {
     expect(summarizeMateOutput(
       "對抗式架構審查\n\n結論：使用單一入口。\n證據層：/tmp/run.json\n",
     )).toBe("使用單一入口。");
+  });
+
+  test("renders a distinct pre-dispatch workflow graph for every mode", () => {
+    expect(renderMateWorkflowGraph("quick")).toContain("[快速 Scout]");
+    expect(renderMateWorkflowGraph("standard")).toContain("[Reviewer]");
+    expect(renderMateWorkflowGraph("expert")).toContain(
+      "[Author] <--> [Challenger]",
+    );
+    expect(renderMateWorkflowGraph("research")).toContain("[Coverage]");
+    expect(renderMateWorkflowGraph("learn")).toContain("[白話 Author]");
+    expect(renderMateWorkflowGraph("standard")).toContain("尚未執行");
   });
 
 });

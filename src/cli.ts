@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import {
+  lstatSync,
+  mkdirSync,
+  readlinkSync,
+  symlinkSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
@@ -54,6 +60,7 @@ import {
   recordMateConsoleTurn,
   renderMateConsoleHelp,
   renderMateConsoleStatus,
+  renderMateWorkflowGraph,
   summarizeMateOutput,
   type MateMode,
   type MateRuntimeRequest,
@@ -784,6 +791,7 @@ export async function conductMateConsole(
       continue;
     }
 
+    io.stdout.write(`\n${renderMateWorkflowGraph(action.mode)}\n\n`);
     const captured = captureMateOutput(io);
     const request = buildMateRuntimeRequest(state, action.mode, action.task);
     let exitCode: number;
@@ -910,13 +918,49 @@ function runLinkCommand(args: string[], io: CliIO): number {
   io.stdout.write(result.stdout ?? "");
   io.stderr.write(result.stderr ?? "");
   if (result.status === 0) {
-    io.stdout.write("Herdr plugin 已 link。下一步: `bun bin/aicoding-mate open`。\n");
+    if (!installAriLauncher(io)) return 1;
+    io.stdout.write("Herdr plugin 已 link。下一步: 在 Herdr shell 輸入 `Ari`。\n");
   }
   return result.status ?? 1;
 }
 
+function installAriLauncher(io: CliIO): boolean {
+  const configuredDir = io.env.ACM_USER_BIN_DIR?.trim();
+  const homeDir = io.env.HOME?.trim();
+  if (!configuredDir && !homeDir) {
+    io.stderr.write("無法安裝 Ari launcher：找不到使用者目錄。\n");
+    return false;
+  }
+  const binDir = configuredDir
+    ? resolve(io.cwd, configuredDir)
+    : resolve(homeDir ?? "", ".local", "bin");
+  const launcherPath = resolve(binDir, "Ari");
+  const launcherTarget = resolve(repoRoot(), "bin", "Ari");
+  mkdirSync(binDir, { recursive: true });
+  try {
+    symlinkSync(launcherTarget, launcherPath);
+  } catch {
+    const existingTarget = (() => {
+      try {
+        if (!lstatSync(launcherPath).isSymbolicLink()) return undefined;
+        return resolve(dirname(launcherPath), readlinkSync(launcherPath));
+      } catch {
+        return undefined;
+      }
+    })();
+    if (existingTarget !== launcherTarget) {
+      io.stderr.write(
+        `無法安裝 Ari launcher：${launcherPath} 已存在且不是目前 repository。\n`,
+      );
+      return false;
+    }
+  }
+  io.stdout.write(`Ari launcher 已就緒：${launcherPath}\n`);
+  return true;
+}
+
 function runOpenCommand(args: string[], io: CliIO): number {
-  let placement = "tab";
+  let placement = "overlay";
   let focus = true;
   let mode: MateMode = "standard";
   for (let index = 0; index < args.length; index += 1) {
@@ -1011,7 +1055,7 @@ function helpText(): string {
 說明:
   install  安裝 Bun dependencies。
   link     將目前工作目錄註冊成 Herdr local plugin。
-  open     從 Herdr 開啟單一 Ari pane；在 pane 內用 slash command 切換模式。
+  open     相容入口；預設以 overlay 開啟 Ari。主要入口是在 Herdr shell 輸入 Ari。
   doctor   從 runtime 實際讀回 Herdr、Firstmate、Codex、Claude、git、gh、jq、Bun 狀態。
   bootstrap-firstmate 取得 pinned Firstmate distro 並建立隔離 FM_HOME。
   quick    啟動 Firstmate-on-Herdr Quick run；四項 read-back 缺一就 fail closed。

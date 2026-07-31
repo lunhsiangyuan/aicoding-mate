@@ -117,20 +117,20 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    OPEN["aicoding-mate open"] --> MATE["Herdr mate pane"]
+    OPEN["Herdr shell: Ari"] --> MATE["目前 pane 的 Ari console"]
     MATE --> PARSE["Slash parser<br/>只解析使用者意圖"]
     PARSE --> Q["Quick"]
     PARSE --> S["Standard / Learn"]
     PARSE --> E["Expert → adversarial recipe"]
     PARSE --> R["Research"]
-    Q --> QP["Firstmate Quick primitive<br/>historical-unverified read-back"]
-    S --> F
-    E --> F
-    R --> F
+    Q --> GQ["Quick ASCII preview"] --> QP["Firstmate Quick primitive<br/>historical-unverified read-back"]
+    S --> GS["Standard / Learn ASCII preview"] --> F
+    E --> GE["Expert ASCII preview"] --> F
+    R --> GR["Research ASCII preview"] --> F
     F["Firstmate signed decision / dispatch"] --> REG["Canonical Run Registry"]
 ```
 
-Slash parser 不選 provider model、不執行 fallback、不修改 workflow barrier。console 以結構化 `MateRuntimeRequest` 分開 `currentTask` 與 `continuityContext`；dispatch 只接受前者，後者保留在 pane 互動層。若歷史決策要成為新任務的一部分，必須由使用者在本輪複誦，或經確認過的 Context Capsule 回到主 session，再重新通過 scope gate。`Learn` 只為 Standard 增加 architect-first、progressive-disclosure 的本輪任務說明；它不建立第二套 execution authority。Quick 仍是 Firstmate 下游 primitive，其歷史 record 不會被升格成 signed canonical authority。舊的 direct CLI recipe commands 只保留給 automation 與診斷，不是另一組一般使用介面。
+Slash parser 不選 provider model、不執行 fallback、不修改 workflow barrier。只有 `run` action 會先 render mode-level ASCII graph，再呼叫 dispatcher；graph 是可讀預覽，不是 authority artifact，也不宣稱 exact assignment。console 以結構化 `MateRuntimeRequest` 分開 `currentTask` 與 `continuityContext`；dispatch 只接受前者，後者保留在 pane 互動層。若歷史決策要成為新任務的一部分，必須由使用者在本輪複誦，或經確認過的 Context Capsule 回到主 session，再重新通過 scope gate。`Learn` 只為 Standard 增加 architect-first、progressive-disclosure 的本輪任務說明；它不建立第二套 execution authority。Quick 仍是 Firstmate 下游 primitive，其歷史 record 不會被升格成 signed canonical authority。舊的 direct CLI recipe commands 只保留給 automation 與診斷，不是另一組一般使用介面。
 
 ## 3. 核心資料契約
 

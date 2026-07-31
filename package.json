@@ -1,10 +1,11 @@
 {
   "name": "aicoding-mate",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Ari, the architect-facing Firstmate control layer for Herdr.",
   "type": "module",
   "bin": {
-    "aicoding-mate": "./bin/aicoding-mate"
+    "aicoding-mate": "./bin/aicoding-mate",
+    "Ari": "./bin/Ari"
   },
   "scripts": {
     "test": "bun test",

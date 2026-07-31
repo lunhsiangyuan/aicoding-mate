@@ -1,6 +1,6 @@
 id = "ai-coding-mate"
 name = "Ari"
-version = "0.3.1"
+version = "0.3.2"
 min_herdr_version = "0.7.0"
 description = "Ari is the architect-facing Firstmate control layer for Herdr."
 platforms = ["macos", "linux"]
@@ -26,7 +26,7 @@ command = ["bun", "bin/aicoding-mate", "codex-review-start"]
 [[panes]]
 id = "mate"
 title = "Ari"
-placement = "tab"
+placement = "overlay"
 command = ["bun", "bin/aicoding-mate", "pane"]
 
 [[panes]]

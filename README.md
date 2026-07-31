@@ -4,7 +4,7 @@ Ari 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目�
 
 **Ari** 是使用者看到、對話與稱呼的產品名稱。為了不破壞既有安裝、automation 與 durable lineage，technical identifier 暫時維持 `aicoding-mate`，包括 CLI、repository、plugin ID、state directory 與 authority store。
 
-> 目前狀態：v0.3 將一般使用流程收斂到一個 Herdr `Ari` pane，並以 `/quick`、`/standard`、`/expert`、`/research`、`/learn` 切換。底層沿用 v0.2 的 Firstmate Workflow Authority 與 canonical Run Registry；slash command 只表達使用者偏好，不取得派工權。
+> 目前狀態：v0.3.2 讓使用者在 Herdr shell 直接輸入 `Ari`，於目前 pane 進入控制面，不另開預設 tab；以 `/quick`、`/standard`、`/expert`、`/research`、`/learn` 切換。真正派工前先顯示本輪 ASCII workflow graph。底層沿用 v0.2 的 Firstmate Workflow Authority 與 canonical Run Registry；slash command 與 graph 只呈現使用者意圖，不取得派工權。
 
 ## 它要解決什麼
 
@@ -21,7 +21,7 @@ Ari 的預設方向相反：先追求完整涵蓋，再標示證據成熟度；�
 
 ```mermaid
 flowchart TD
-    U["使用者<br/>目標、優先順序、產品邊界"] --> P["單一 Ari pane<br/>slash mode + local bounded continuity"]
+    U["使用者<br/>在 Herdr shell 輸入 Ari"] --> P["目前 pane 進入 Ari<br/>slash mode + local bounded continuity"]
     P --> A["Architect-mode Firstmate<br/>解釋、編排、複誦"]
     A --> W["Workflow Engine<br/>固定流程、動態派工"]
     W --> H["Herdr<br/>可見執行、隔離與監督"]
@@ -69,15 +69,17 @@ Ari 是薄薄的控制層，不是 Firstmate fork，也不取代 Herdr：
 
 Workflow recipe 不寫死 provider model ID。設定檔使用「最強推理」、「平衡建置」、「快速搜尋」等邏輯角色，再由可覆寫的 adapter policy 對應到當下可用的實際模型。
 
-## T1：從 Herdr 開啟單一入口
+## T1：在 Herdr 目前 pane 進入 Ari
 
-Ari 的一般使用路徑只有一條：安裝 dependencies、link 成 Herdr local plugin，然後開啟同一個主 pane。
+Ari 的一般使用路徑只有一條：安裝 dependencies、link 成 Herdr local plugin 與 launcher，然後在任一 Herdr shell 輸入 `Ari`。
 
 ```bash
 bun install
 bun bin/aicoding-mate link
-bun bin/aicoding-mate open
+Ari
 ```
+
+`Ari` 直接佔用目前 pane；輸入 `/quit` 後回到原 shell，不建立新的預設 tab。`aicoding-mate open` 保留給舊 automation，預設改用 overlay。
 
 也可以直接檢查 CLI 與 doctor：
 
@@ -91,11 +93,11 @@ doctor 的每個項目都來自 runtime read-back：Herdr 會讀 `herdr status s
 
 ## T2：從 Herdr 派出 Firstmate Quick 任務
 
-先建立 pinned、pristine 的 Firstmate distro 與隔離 `FM_HOME`，再開啟主 pane：
+先建立 pinned、pristine 的 Firstmate distro 與隔離 `FM_HOME`，再從 Herdr shell 進入 Ari：
 
 ```bash
 bun bin/aicoding-mate bootstrap-firstmate
-bun bin/aicoding-mate open
+Ari
 ```
 
 在 pane 內輸入 `/quick`，再輸入明確唯讀的檢查、搜尋、摘要、解釋或 review 任務；也可以單行輸入 `/quick 說明這個 repository 的架構`。其他意圖會在派工前導向正式 workflow。控制通道明確分成兩個方向：
@@ -137,7 +139,9 @@ Quick record 是未簽章的歷史資料，`read-run` 會顯示內容但固定�
 
 每個 slash mode 可只切換模式，也可在同一行附上任務。直接輸入一般文字時，系統使用目前模式。pane 最多保留最近四輪摘要作為本機 continuity state；本輪 `currentTask` 與歷史 `continuityContext` 是不同欄位，只有 `currentTask` 會進入 Firstmate decision、scope gate、run identity 與 worker。v0.3 不會把舊回合原文自動重灌成新指令；需要沿用的決策，應在本輪文字中複誦，或經 Context Branch 的確認 capsule 帶回。關閉 pane 會結束這段暫存對話，durable run 與 lineage 不受影響。
 
-若想一開啟就預選模式，可使用 `bun bin/aicoding-mate open --mode expert`；這仍會開啟同一個 `mate` pane，不會建立另一種工作面。
+輸入真正任務後，Ari 先顯示該模式的 ASCII workflow graph，再呼叫 dispatcher。graph 只呈現 Firstmate 即將採用的角色與階段；實際模型仍由 Firstmate 依當下 availability 發出 signed decision。
+
+相容入口 `bun bin/aicoding-mate open --mode expert` 仍可預選模式，但預設使用 overlay，不是日常主入口。
 
 主畫面只顯示結論、影響、下一步與 evidence 路徑；完整模型輸出、未知項目與 lineage 保留在 durable record。
 

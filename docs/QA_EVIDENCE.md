@@ -2,7 +2,40 @@
 
 本文件保存 2026-07-31 在 macOS、Herdr 與 Codex Desktop 的實機 gate。它區分「已證明」「部分成功」「未證明」，不以測試綠燈或 task 曾啟動取代 runtime read-back。
 
-## v0.3 單一入口增量 gate
+## v0.3.2 current-pane 入口與 workflow graph gate
+
+2026-07-31 重新 link 後，Herdr receipt 讀回 plugin `0.3.2`、主 pane compatibility placement `overlay`；同一操作在 `/Users/lunhsiangyuan/.local/bin/Ari` 建立指向本 repository `bin/Ari` 的 launcher。
+
+真實 Herdr surface：
+
+- 驗收來源是既有 shell pane `w1N:pB`；環境讀回 `HERDR_PANE_ID=w1N:pB`、`HERDR_TAB_ID=w1N:t7`、`HERDR_WORKSPACE_ID=w1N`。
+- 輸入 `Ari` 前，workspace `w1N` 有 `p1`、`p4`、`pB` 三個 panes；輸入後仍是同三個，沒有建立新 tab 或 pane。
+- `pB` 直接讀回 `Ari`、`目前模式：standard` 與 `[standard] >`；`process-info` 顯示前景為 `bun /Users/lunhsiangyuan/.local/bin/Ari`，底層 shell 仍是原 `zsh` PID `89235`。
+- 輸入 `/quick 修改檔案` 時，先讀回 Quick ASCII graph，再讀回 scope blocker；workspace pane 數量沒有增加，未建立 worker，也沒有呼叫付費模型。
+- 只輸入 `/expert` 後讀回模式切換與 `/status`，沒有顯示假 workflow graph，也沒有派工。
+- `/quit` 後同一 `pB` 的前景回到原 `zsh` PID `89235`；再次輸入 `Ari` 後回到 Standard prompt，並保持開啟供使用者操作。
+
+Automated gate：
+
+- `bun test`：187 pass、0 fail、871 assertions。
+- `bun run typecheck`：exit 0。
+- launcher regression 證明無參數 `Ari` 直接進入 console；link regression 證明 launcher 指向目前 repository，遇到未知同名檔案時不覆寫。
+- pre-dispatch ordering regression 在 dispatcher callback 內讀回既有 stdout，證明 graph 在 callback 前已出現。
+- 五個模式各有不同 graph；`open` compatibility regression 證明未指定 placement 時使用 overlay。
+
+### v0.3.2 review 與 debugging gate
+
+- Root scope review：變更只涉及 current-pane launcher、UI preview、相容 placement、測試與文件；Firstmate decision、Adapter、Run Registry、state path 與 lineage schema 未變。
+- 未發現剩餘 P0／P1／P2；launcher 對既有未知 `Ari` 路徑 fail closed，不覆寫使用者程式。
+
+| 假設 | runtime 證據 | 判定 |
+| --- | --- | --- |
+| 輸入 `Ari` 仍暗中建立新 pane／tab | `w1N` 在輸入前後都只有 `p1`、`p4`、`pB` | 否 |
+| inline launcher 遺失 Herdr source identity，導致結果無法回送 | `pB` 讀回完整 Herdr workspace／tab／pane identity；Quick blocker 與結果都回到同一 pane | 否 |
+| graph 在 dispatcher 後才補印，或 graph 本身觸發 worker | 實機先看到 graph 再看到 scope blocker且 pane 數不變；ordering regression 在 dispatcher callback 前已讀到 graph | 否 |
+| `/quit` 會關閉 pane 或留下 Ari child process | `process-info` 回到原 `zsh` PID `89235`，`pB` 仍存在且可再次輸入 `Ari` | 否 |
+
+## v0.3.1 歷史 tab 入口 gate
 
 2026-07-31 重新 link local plugin 後，Herdr plugin receipt 讀回：
 
