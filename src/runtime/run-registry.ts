@@ -310,6 +310,32 @@ export class FileRunRegistry {
     );
   }
 
+  renewLease(
+    lease: RegistryLease,
+    input: {
+      readonly leaseTtlMs: number;
+      readonly now: string;
+    },
+  ): RegistryLease {
+    const current = this.#assertLease(lease, input.now);
+    if (input.leaseTtlMs <= 0) {
+      throw new Error("lease_ttl_must_be_positive");
+    }
+    const nowMs = Date.parse(input.now);
+    if (!Number.isFinite(nowMs)) {
+      throw new Error("invalid_now");
+    }
+    const renewed: RegistryLease = {
+      runId: current.runId,
+      owner: current.owner,
+      token: current.token,
+      acquiredAt: current.acquiredAt,
+      expiresAt: new Date(nowMs + input.leaseTtlMs).toISOString(),
+    };
+    this.#writeLeaseFile(renewed);
+    return renewed;
+  }
+
   releaseLease(lease: RegistryLease): void {
     this.#assertLeaseToken(lease);
     rmSync(this.#leasePath(lease.runId), { recursive: true, force: true });
@@ -647,7 +673,7 @@ export class FileRunRegistry {
     return lease;
   }
 
-  #assertLease(lease: RegistryLease, now: string): void {
+  #assertLease(lease: RegistryLease, now: string): LeaseFile {
     const current = this.#assertLeaseToken(lease);
     const nowMs = Date.parse(now);
     if (!Number.isFinite(nowMs)) {
@@ -656,6 +682,7 @@ export class FileRunRegistry {
     if (Date.parse(current.expiresAt) <= nowMs) {
       throw new Error("lease_expired");
     }
+    return current;
   }
 
   #assertLeaseToken(lease: RegistryLease): LeaseFile {

@@ -248,6 +248,32 @@ describe("filesystem run registry", () => {
     ).toBe("running");
   });
 
+  test("renews a live lease without changing its fencing token", () => {
+    const { registry, lease } = createRun(
+      "2026-07-30T16:00:00.000Z",
+      60_000,
+    );
+
+    const renewed = registry.renewLease(lease, {
+      leaseTtlMs: 120_000,
+      now: "2026-07-30T16:00:30.000Z",
+    });
+
+    expect(renewed.token).toBe(lease.token);
+    expect(renewed.acquiredAt).toBe(lease.acquiredAt);
+    expect(renewed.expiresAt).toBe("2026-07-30T16:02:30.000Z");
+    expect(
+      registry.markRunning(renewed, { now: "2026-07-30T16:02:00.000Z" })
+        .status,
+    ).toBe("running");
+    expect(() =>
+      registry.renewLease(renewed, {
+        leaseTtlMs: 60_000,
+        now: "2026-07-30T16:02:30.000Z",
+      })
+    ).toThrow("lease_expired");
+  });
+
   test("rejects duplicate dispatch idempotency keys within one attempt", () => {
     const { registry, lease } = createRun();
     const dispatch = {
