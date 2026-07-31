@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
@@ -167,7 +167,10 @@ describe("high-intensity runtime", () => {
       call.workflowDecisionId ===
         result.record.workflowDecision?.workflowDecisionId
     )).toBe(true);
-    expect(readHighIntensityRunRecord(result.record.recordPath)?.id).toBe(result.record.id);
+    expect(readHighIntensityRunRecord(
+      result.record.recordPath,
+      authorityRootForRecord(result.record.recordPath),
+    )?.id).toBe(result.record.id);
   });
 
   test("fails closed on bad research JSON before adversarial calls", async () => {
@@ -222,7 +225,10 @@ describe("high-intensity runtime", () => {
     );
     expect(first.record.id).toBe(second.record.id);
     expect(first.record.recordPath).toBe(second.record.recordPath);
-    expect(readHighIntensityRunRecord(first.record.recordPath)?.id).toBe(
+    expect(readHighIntensityRunRecord(
+      first.record.recordPath,
+      authorityRootForRecord(first.record.recordPath),
+    )?.id).toBe(
       first.record.id,
     );
   });
@@ -237,7 +243,10 @@ describe("high-intensity runtime", () => {
       modelPort: scriptedPort([]),
       now: () => "2026-07-31T01:00:00.000Z",
     });
-    const original = readHighIntensityRunRecord(result.record.recordPath);
+    const original = readHighIntensityRunRecord(
+      result.record.recordPath,
+      authorityRootForRecord(result.record.recordPath),
+    );
     expect(original?.id).toBe(result.record.id);
 
     writeFileSync(result.record.recordPath, JSON.stringify({
@@ -246,13 +255,19 @@ describe("high-intensity runtime", () => {
       status: "completed",
       recordPath: result.record.recordPath,
     }));
-    expect(readHighIntensityRunRecord(result.record.recordPath)).toBeUndefined();
+    expect(readHighIntensityRunRecord(
+      result.record.recordPath,
+      authorityRootForRecord(result.record.recordPath),
+    )).toBeUndefined();
 
     writeFileSync(result.record.recordPath, JSON.stringify({
       ...result.record,
       recordPath: join(stateDir, "wrong.json"),
     }));
-    expect(readHighIntensityRunRecord(result.record.recordPath)).toBeUndefined();
+    expect(readHighIntensityRunRecord(
+      result.record.recordPath,
+      authorityRootForRecord(result.record.recordPath),
+    )).toBeUndefined();
   });
 
   test("fails closed with durable record when model port throws", async () => {
@@ -277,7 +292,10 @@ describe("high-intensity runtime", () => {
       "model_execution_unknown_outcome:research",
     ]);
     expect(result.record.blockers.join("\n")).not.toContain("secret provider stack trace");
-    expect(readHighIntensityRunRecord(result.record.recordPath)?.blockers).toEqual([
+    expect(readHighIntensityRunRecord(
+      result.record.recordPath,
+      authorityRootForRecord(result.record.recordPath),
+    )?.blockers).toEqual([
       "model_execution_unknown_outcome:research",
     ]);
   });
@@ -484,7 +502,10 @@ describe("high-intensity runtime", () => {
     expect(result.record.blockers).toContain(
       "model_execution_unknown_outcome:research",
     );
-    expect(readHighIntensityRunRecord(result.record.recordPath)?.status).toBe("blocked");
+    expect(readHighIntensityRunRecord(
+      result.record.recordPath,
+      authorityRootForRecord(result.record.recordPath),
+    )?.status).toBe("blocked");
   });
 
   test("fails closed when model provenance differs from routing", async () => {
@@ -754,4 +775,8 @@ function researchJson(): string {
       },
     ],
   });
+}
+
+function authorityRootForRecord(recordPath: string): string {
+  return join(dirname(dirname(recordPath)), "firstmate-authority");
 }

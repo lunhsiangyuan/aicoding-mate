@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
@@ -263,7 +263,10 @@ describe("standard runtime integration", () => {
       workflowAuthority: "firstmate_verified",
       runtimeAuthority: "canonical_run_registry_verified",
     });
-    expect(readStandardRunRecord(result.record.recordPath)?.id).toBe(
+    expect(readStandardRunRecord(
+      result.record.recordPath,
+      authorityRootForRecord(result.record.recordPath),
+    )?.id).toBe(
       result.record.id,
     );
   });
@@ -328,7 +331,10 @@ describe("standard runtime integration", () => {
         },
       }, null, 2)}\n`,
     );
-    expect(readStandardRunRecord(first.record.recordPath)).toBeUndefined();
+    expect(readStandardRunRecord(
+      first.record.recordPath,
+      authorityRootForRecord(first.record.recordPath),
+    )).toBeUndefined();
   });
 
   test("coalesces an active duplicate before the first Firstmate receipt returns", async () => {
@@ -1132,12 +1138,14 @@ describe("standard runtime integration", () => {
         result.record.recordPath,
         conclusion,
         "unrelated pane output",
+        authorityRootForRecord(result.record.recordPath),
       ),
     ).toBeUndefined();
     const marked = markStandardRunPresented(
       result.record.recordPath,
       conclusion,
       rendered,
+      authorityRootForRecord(result.record.recordPath),
     );
     expect(marked?.claims.reportReadbackMatchesPane).toBe(true);
   });
@@ -1176,10 +1184,17 @@ describe("standard runtime integration", () => {
       "utf8",
     );
 
-    expect(readStandardRunRecord(result.record.recordPath)).toBeUndefined();
+    expect(readStandardRunRecord(
+      result.record.recordPath,
+      authorityRootForRecord(result.record.recordPath),
+    )).toBeUndefined();
   });
 });
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function authorityRootForRecord(recordPath: string): string {
+  return join(dirname(dirname(recordPath)), "firstmate-authority");
 }

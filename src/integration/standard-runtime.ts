@@ -1195,7 +1195,7 @@ export function renderStandardText(result: StandardRunResult): string {
 
 export function readStandardRunRecord(
   path: string,
-  trustedAuthorityRoot = inferFirstmateAuthorityRootFromRecordPath(path),
+  trustedAuthorityRoot: string,
 ): StandardRunRecord | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -1211,7 +1211,7 @@ export function markStandardRunPresented(
   path: string,
   expectedText: string,
   observedPaneText: string,
-  trustedAuthorityRoot = inferFirstmateAuthorityRootFromRecordPath(path),
+  trustedAuthorityRoot: string,
 ): StandardRunRecord | undefined {
   const record = readStandardRunRecord(path, trustedAuthorityRoot);
   if (

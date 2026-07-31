@@ -672,7 +672,7 @@ export async function createHighIntensityRun(
 
 export function readHighIntensityRunRecord(
   path: string,
-  trustedAuthorityRoot = inferFirstmateAuthorityRootFromRecordPath(path),
+  trustedAuthorityRoot: string,
 ): HighIntensityRunRecord | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -1377,10 +1377,10 @@ function releaseLeaseIfHeld(
   }
 }
 
-function fileSha256(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
 function inferFirstmateAuthorityRootFromRecordPath(path: string): string {
   return resolveFirstmateAuthorityRoot(dirname(dirname(resolve(path))));
+}
+
+function fileSha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
