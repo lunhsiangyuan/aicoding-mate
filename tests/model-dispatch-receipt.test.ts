@@ -77,6 +77,14 @@ describe("model dispatch receipt", () => {
         readFileSync(persisted.receipt.receiptPath, "utf8"),
       ).outputHash,
     ).toBe(persisted.receipt.outputHash);
+    expect(() =>
+      persistModelDispatchReceipt({
+        rootDir,
+        identity,
+        rawOutput: "original review",
+        completedAt: "2026-07-31T02:01:00.000Z",
+      })
+    ).toThrow("model_dispatch_receipt_invalid_existing");
   });
 
   test("same key is idempotent for identical output and rejects conflicts", () => {

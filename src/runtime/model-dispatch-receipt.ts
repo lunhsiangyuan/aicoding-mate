@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -66,6 +67,9 @@ export function persistModelDispatchReceipt(options: {
   }
 
   const outputPath = join(dirname(receiptPath), "output.txt");
+  if (existsSync(receiptPath) || existsSync(outputPath)) {
+    throw new Error("model_dispatch_receipt_invalid_existing");
+  }
   mkdirSync(dirname(receiptPath), { recursive: true });
   writeFileAtomic(outputPath, options.rawOutput);
   const receipt: ModelDispatchReceipt = {
