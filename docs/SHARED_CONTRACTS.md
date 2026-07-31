@@ -1,4 +1,4 @@
-# AI Coding Mate 共用契約
+# Ari 共用契約
 
 這份文件固定 T3 Standard workflow 與 T4 Context Branch 共用的邊界。實作者可以在自己的模組內選擇實作方式，但不得改變這些跨模組語意。
 

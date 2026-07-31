@@ -285,7 +285,7 @@ export function createDefaultCapsuleInjectionPort(
         }
         const marker = `ACM_CAPSULE_HASH=${request.capsule.selectedTextHash}`;
         const message = [
-          "[AI Coding Mate Context Capsule]",
+          "[Ari Context Capsule]",
           `Intent: ${request.capsule.mutationIntent}`,
           `Confirmed recitation: ${request.capsule.recitation}`,
           "Selected context:",

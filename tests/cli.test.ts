@@ -159,7 +159,7 @@ describe("cli", () => {
     expect(result.stdout).toContain(
       "mode=research completed_turns=0 context_turns=0",
     );
-    expect(result.stdout).toContain("AI Coding Mate 已離開");
+    expect(result.stdout).toContain("Ari 已離開");
   });
 
   test("pane contains a thrown workflow to one turn and keeps the session alive", async () => {
@@ -178,7 +178,7 @@ describe("cli", () => {
     expect(buffer.stdout).toContain(
       "mode=standard completed_turns=1 context_turns=1",
     );
-    expect(buffer.stdout).toContain("AI Coding Mate 已離開");
+    expect(buffer.stdout).toContain("Ari 已離開");
   });
 
   test("pane keeps prior turns as local continuity without redispatching them", async () => {

@@ -1,8 +1,10 @@
-# AI Coding Mate
+# Ari
 
-AI Coding Mate 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目標、優先順序與不能碰的邊界；系統負責把技術工作交給 Firstmate、Herdr 與不同模型，並把結果整理成能直接閱讀的報告。
+Ari 是一個給 AI vibe coder 使用的架構控制層。你只需要說明目標、優先順序與不能碰的邊界；系統負責把技術工作交給 Firstmate、Herdr 與不同模型，並把結果整理成能直接閱讀的報告。
 
-> 目前狀態：v0.3 將一般使用流程收斂到一個 Herdr `AI Coding Mate` pane，並以 `/quick`、`/standard`、`/expert`、`/research`、`/learn` 切換。底層沿用 v0.2 的 Firstmate Workflow Authority 與 canonical Run Registry；slash command 只表達使用者偏好，不取得派工權。
+**Ari** 是使用者看到、對話與稱呼的產品名稱。為了不破壞既有安裝、automation 與 durable lineage，technical identifier 暫時維持 `aicoding-mate`，包括 CLI、repository、plugin ID、state directory 與 authority store。
+
+> 目前狀態：v0.3 將一般使用流程收斂到一個 Herdr `Ari` pane，並以 `/quick`、`/standard`、`/expert`、`/research`、`/learn` 切換。底層沿用 v0.2 的 Firstmate Workflow Authority 與 canonical Run Registry；slash command 只表達使用者偏好，不取得派工權。
 
 ## 它要解決什麼
 
@@ -13,13 +15,13 @@ AI Coding Mate 是一個給 AI vibe coder 使用的架構控制層。你只需�
 - 技術問題反覆回頭詢問使用者，打斷架構層級的決策。
 - 多模型雖然能平行工作，卻缺少固定、可預期的 review 與收斂流程。
 
-AI Coding Mate 的預設方向相反：先追求完整涵蓋，再標示證據成熟度；技術細節留在可展開層，不污染主要報告。
+Ari 的預設方向相反：先追求完整涵蓋，再標示證據成熟度；技術細節留在可展開層，不污染主要報告。
 
 ## 大架構
 
 ```mermaid
 flowchart TD
-    U["使用者<br/>目標、優先順序、產品邊界"] --> P["單一 AI Coding Mate pane<br/>slash mode + local bounded continuity"]
+    U["使用者<br/>目標、優先順序、產品邊界"] --> P["單一 Ari pane<br/>slash mode + local bounded continuity"]
     P --> A["Architect-mode Firstmate<br/>解釋、編排、複誦"]
     A --> W["Workflow Engine<br/>固定流程、動態派工"]
     W --> H["Herdr<br/>可見執行、隔離與監督"]
@@ -28,9 +30,9 @@ flowchart TD
     R --> O["Recall-first 雙層報告"]
 ```
 
-AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herdr：
+Ari 是薄薄的控制層，不是 Firstmate fork，也不取代 Herdr：
 
-- **AI Coding Mate**：接收 Architect 的目標與邊界，整合入口、read-back 與報告呈現。
+- **Ari**：接收 Architect 的目標與邊界，整合入口、read-back 與報告呈現。
 - **Firstmate**：是唯一 Workflow Authority，決定流程、角色、模型、fallback、停止條件與 Report Composer。
 - **Herdr**：提供可見的 agent runtime、工作區與 plugin surface。
 - **Codex／Claude／Cursor／Gemini**：依角色執行、搜尋、review 或裁決。
@@ -69,7 +71,7 @@ Workflow recipe 不寫死 provider model ID。設定檔使用「最強推理」�
 
 ## T1：從 Herdr 開啟單一入口
 
-AI Coding Mate 的一般使用路徑只有一條：安裝 dependencies、link 成 Herdr local plugin，然後開啟同一個主 pane。
+Ari 的一般使用路徑只有一條：安裝 dependencies、link 成 Herdr local plugin，然後開啟同一個主 pane。
 
 ```bash
 bun install
@@ -101,7 +103,7 @@ bun bin/aicoding-mate open
 - Herdr pane 到 Firstmate：`fm-brief.sh` 寫入本次 task，`fm-spawn.sh` 建立隔離 worktree 與 Codex worker。
 - Firstmate 回到 Herdr pane：`fm-peek.sh`、status 與 report 形成結果；CLI 輸出後再用 `herdr pane read` 從來源 pane 讀回同一內容。
 
-AI Coding Mate 不修改 pinned Firstmate clone；它以 app-owned PATH adapter 把 Firstmate 的 Codex worker 從 upstream 的 full-access launch 收斂為 `workspace-write`、無 approval prompt、command network 關閉。可寫範圍只包含 Treehouse 隔離 worktree 與本次 `FM_HOME` report/status，並停用 web search 與 MCP server 設定。
+Ari 不修改 pinned Firstmate clone；它以 app-owned PATH adapter 把 Firstmate 的 Codex worker 從 upstream 的 full-access launch 收斂為 `workspace-write`、無 approval prompt、command network 關閉。可寫範圍只包含 Treehouse 隔離 worktree 與本次 `FM_HOME` report/status，並停用 web search 與 MCP server 設定。
 
 每次 run 會留下 JSON record，記錄 task、source pane、worker pane、control channel、evidence paths、狀態與結果。只有來源 pane 仍存在、worker pane 可見、worker 位於獨立 git worktree，而且來源 pane runtime read-back 與 durable result 一致時，四項 claims 才全部為 `true`：
 
@@ -161,7 +163,7 @@ Firstmate decision 不再只靠 record 裡的字串宣稱來源。控制平面�
 - Firstmate：`kunchenguid/firstmate@e595611291247368b982eb729097c54f2b45aa78`
 - Herdr：`herdrdev/herdr@v0.7.5`
 
-Firstmate 採 MIT License；Herdr 與本 repository 採 Apache License 2.0。AI Coding Mate 初期透過公開整合面使用兩者，不複製或修改上游主程式。
+Firstmate 採 MIT License；Herdr 與本 repository 採 Apache License 2.0。Ari 初期透過公開整合面使用兩者，不複製或修改上游主程式。
 
 2026-07-31 的實機 gate 使用本機 Herdr `0.7.3`、protocol `16`，client/server 回報 `compatible: true`。這證明目前安裝可運作，不等於已把 runtime pin 升級到 `v0.7.5`。
 

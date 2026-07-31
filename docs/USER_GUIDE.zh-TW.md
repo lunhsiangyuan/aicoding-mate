@@ -1,12 +1,14 @@
-# AI Coding Mate 使用說明
+# Ari 使用說明
 
 ## 先知道三件事
 
-AI Coding Mate 是 Herdr 裡的一個架構控制入口：
+Ari 是 Herdr 裡的一個架構控制入口：
 
 1. 你描述想完成的結果，不需要先拆技術步驟。
 2. Firstmate 負責編排 Codex、Claude、Grok 等模型。
 3. 你先看到結論、影響與下一步；證據和技術細節留在第二層。
+
+介面與文件稱它為 **Ari**。指令仍使用 `aicoding-mate`；這只是穩定的技術名稱，不代表 Herdr 裡還有第二個產品入口。
 
 v0.3 只有一個 Herdr 主入口；Quick、Standard、Expert、Research 與 Learn 都在同一個 pane 內切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
 
@@ -30,7 +32,7 @@ bun bin/aicoding-mate open --mode research
 bun bin/aicoding-mate open --mode learn
 ```
 
-這五個指令都開啟同一個 `AI Coding Mate` pane，只改變初始模式。
+這五個指令都開啟同一個 `Ari` pane，只改變初始模式。
 
 第一次使用 Firstmate 前：
 
@@ -139,7 +141,7 @@ Learn 會先給短簡介，再列出本輪問題真正需要理解的少量技�
 ## Context Branch
 
 1. 在 Herdr 選取一段文字。
-2. 執行「用 AI Coding Mate 深入了解選取內容」。
+2. 執行「用 Ari 深入了解選取內容」。
 3. Branch 先給白話簡介。
 4. 輸入 `d` 才進一步研究技術細節。
 5. 告訴 Branch 要如何帶回主任務。
@@ -157,7 +159,7 @@ Learn 會先給短簡介，再列出本輪問題真正需要理解的少量技�
 4. 讀回 review 文字並寫入 Review Capsule。
 5. 請求 macOS 開啟 `codex://threads/<thread-id>`。
 
-若 review turn 被 Codex 標成 `interrupted`，AI Coding Mate 會保留同一 thread 與 canonical run，回報 `review_not_completed`，不會自動建立第二個 review。你可以直接在已開啟的 Codex task 繼續；但人工 follow-up 是新的 turn，目前不會被偽裝成原受管 turn 的 capsule。
+若 review turn 被 Codex 標成 `interrupted`，Ari 會保留同一 thread 與 canonical run，回報 `review_not_completed`，不會自動建立第二個 review。你可以直接在已開啟的 Codex task 繼續；但人工 follow-up 是新的 turn，目前不會被偽裝成原受管 turn 的 capsule。
 
 CLI 只能把 desktop deep-link 標成 `requested_unverified`。2026-07-31 的實機 QA 另由 Codex desktop connector 觀測到同一 thread 已成功打開；這是 QA evidence，不是 CLI 本身的永久能力保證。
 

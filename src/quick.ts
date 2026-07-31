@@ -411,7 +411,7 @@ export function readPaneUntilContains(
 export function renderQuickText(result: QuickResult): string {
   const record = result.record;
   const lines = [
-    "AI Coding Mate Quick run",
+    "Ari Quick run",
     "",
     `run: ${record.id}`,
     `status: ${record.status}`,
@@ -809,7 +809,7 @@ function registerProject(fmHome: string, projectDir: string, createdAt: string) 
   const pattern = new RegExp(`^- ${escapeRegExp(name)} \\[`, "m");
   if (pattern.test(existing)) return;
   const date = createdAt.slice(0, 10);
-  writeFileSync(registry, `${existing.trimEnd()}\n- ${name} [local-only] - AI Coding Mate Quick runtime target (added ${date})\n`);
+  writeFileSync(registry, `${existing.trimEnd()}\n- ${name} [local-only] - Ari Quick runtime target (added ${date})\n`);
 }
 
 function fillBrief(path: string, task: string) {

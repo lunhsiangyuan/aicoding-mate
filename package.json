@@ -1,7 +1,7 @@
 {
   "name": "aicoding-mate",
-  "version": "0.3.0",
-  "description": "Firstmate workflow and runtime authority control layer for Herdr.",
+  "version": "0.3.1",
+  "description": "Ari, the architect-facing Firstmate control layer for Herdr.",
   "type": "module",
   "bin": {
     "aicoding-mate": "./bin/aicoding-mate"

@@ -8,7 +8,7 @@ const statusLabel: Record<ProbeStatus, string> = {
 
 export function renderDoctorText(report: DoctorReport): string {
   const lines = [
-    "AI Coding Mate runtime doctor",
+    "Ari runtime doctor",
     "",
     `產生時間: ${report.generatedAt}`,
     `工作目錄: ${report.cwd}`,
@@ -58,7 +58,7 @@ export function renderPane(report: DoctorReport): string {
 
   return [
     rule,
-    "AI Coding Mate - Herdr 診斷面",
+    "Ari - Herdr 診斷面",
     rule,
     `runtime read-back: ${report.generatedAt}`,
     `cwd: ${report.cwd}`,

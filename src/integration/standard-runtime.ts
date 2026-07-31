@@ -1175,7 +1175,7 @@ export function probeStandardAvailability(
 export function renderStandardText(result: StandardRunResult): string {
   if (!result.ok || result.record.report === null) {
     return [
-      "AI Coding Mate Standard: BLOCKED",
+      "Ari Standard: BLOCKED",
       ...result.record.blockers.map((blocker) => `- ${blocker}`),
       `evidence: ${result.record.recordPath}`,
       "",
@@ -1183,7 +1183,7 @@ export function renderStandardText(result: StandardRunResult): string {
   }
   const report = result.record.report.mainReport;
   return [
-    "AI Coding Mate Standard",
+    "Ari Standard",
     `結論：${report.conclusion}`,
     `影響：${report.impact}`,
     `下一步：${report.nextAction}`,
@@ -1616,7 +1616,7 @@ function buildReviewPrompt(
   decision: RoutingDecision,
 ): string {
   return [
-    "你是 AI Coding Mate 的獨立架構 reviewer。",
+    "你是 Ari 的獨立架構 reviewer。",
     "請用繁體中文，只輸出一個 JSON object，不要 Markdown，不要技術流水帳。",
     'Schema: {"conclusion":"一句可做決策的結論","impact":"一句最重要影響或取捨","nextAction":"一句下一步","limitations":["最多三項"],"unknowns":["最多三項"]}',
     "長度硬限制：conclusion、impact、nextAction 各不超過 180 個 Unicode 字元；limitations 與 unknowns 每項不超過 120 個 Unicode 字元。",
@@ -1629,7 +1629,7 @@ function buildReviewPrompt(
 
 function buildReviewRepairPrompt(rawOutput: string): string {
   return [
-    "上一版 reviewer JSON 未通過 AI Coding Mate 的可讀性契約。",
+    "上一版 reviewer JSON 未通過 Ari 的可讀性契約。",
     "使用相同觀點，只做壓縮與格式修復；不要增加新風險、前言或解釋。",
     "只輸出一個 JSON object，不要 Markdown。",
     'Schema: {"conclusion":"一句可做決策的結論","impact":"一句最重要影響或取捨","nextAction":"一句下一步","limitations":["最多三項"],"unknowns":["最多三項"]}',

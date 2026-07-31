@@ -2,17 +2,17 @@
 
 ## 1. 架構判斷
 
-AI Coding Mate 採「薄控制層」而不是修改 Firstmate：
+Ari 採「薄控制層」而不是修改 Firstmate：
 
 ```mermaid
 flowchart TB
     subgraph UX["Interaction Surface"]
-        MAIN["單一 AI Coding Mate pane<br/>slash modes + local bounded continuity"]
+        MAIN["單一 Ari pane<br/>slash modes + local bounded continuity"]
         LENS["Context Lens"]
         CR["Codex Native Review"]
     end
 
-    subgraph CONTROL["AI Coding Mate Control Plane"]
+    subgraph CONTROL["Ari Control Plane"]
         ARCH["Architect-mode Firstmate<br/>唯一主要 Architect"]
         PREF["Preference + Decision Registry"]
         FLOW["Workflow Engine"]
@@ -58,7 +58,7 @@ flowchart TB
 - 選擇 workflow recipe。
 - 將 context 壓縮成 capsule。
 - 對結果負責並向使用者複誦。
-- AI Coding Mate 的 policy 與 workflow 模組包在這個 Firstmate session 周圍，不形成第二個常駐 Architect agent。
+- Ari 的 policy 與 workflow 模組包在這個 Firstmate session 周圍，不形成第二個常駐 Architect agent。
 
 ### Preference + Decision Registry
 
@@ -111,7 +111,7 @@ stateDiagram-v2
 - Firstmate 是唯一主要 liaison／Architect。
 - Herdr 是可見 runtime，負責 pane、tab、worktree 與 plugin context。
 - Firstmate 經 Herdr 執行，不反向把 Firstmate 嵌入 Herdr 核心。
-- AI Coding Mate 透過公開設定與 adapter surface 約束 Firstmate 的偏好、權限與 workflow，不在 Firstmate 上方增加另一個 agent。
+- Ari 透過公開設定與 adapter surface 約束 Firstmate 的偏好、權限與 workflow，不在 Firstmate 上方增加另一個 agent。
 
 ### 單一入口的控制流
 

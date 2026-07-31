@@ -229,7 +229,7 @@ async function conductContextBranchConversation(
   const now = () => new Date().toISOString();
   let session = initialSession;
   io.stdout.write(
-    "AI Coding Mate Context Branch\n\n"
+    "Ari Context Branch\n\n"
       + `簡介：${session.brief ?? "尚無簡介"}\n\n`
       + "輸入 d 可先做較深入的技術研究；直接按 Enter 則準備帶回主對話。\n> ",
   );
@@ -725,7 +725,7 @@ export async function conductMateConsole(
   let state = createMateConsoleState(io.env.ACM_INITIAL_MODE);
   const once = io.env.ACM_PANE_ONCE === "1";
   io.stdout.write(
-    "AI Coding Mate\n"
+    "Ari\n"
       + `目前模式：${state.mode}。直接輸入需求，或輸入 /help 查看切換方式。\n`,
   );
 
@@ -739,7 +739,7 @@ export async function conductMateConsole(
         error instanceof Error
         && ["pane_input_closed", "pane_input_cancelled"].includes(error.message)
       ) {
-        io.stdout.write("\nAI Coding Mate 已離開。\n");
+        io.stdout.write("\nAri 已離開。\n");
         return 0;
       }
       throw error;
@@ -748,7 +748,7 @@ export async function conductMateConsole(
     const action = parseMateConsoleInput(state, input);
     state = action.state;
     if (action.kind === "quit") {
-      io.stdout.write("AI Coding Mate 已離開。\n");
+      io.stdout.write("Ari 已離開。\n");
       return 0;
     }
     if (action.kind === "noop") {
@@ -989,7 +989,7 @@ function repoRoot(): string {
 }
 
 function helpText(): string {
-  return `AI Coding Mate CLI
+  return `Ari CLI
 
 用法:
   aicoding-mate install
@@ -1011,7 +1011,7 @@ function helpText(): string {
 說明:
   install  安裝 Bun dependencies。
   link     將目前工作目錄註冊成 Herdr local plugin。
-  open     從 Herdr 開啟單一 AI Coding Mate pane；在 pane 內用 slash command 切換模式。
+  open     從 Herdr 開啟單一 Ari pane；在 pane 內用 slash command 切換模式。
   doctor   從 runtime 實際讀回 Herdr、Firstmate、Codex、Claude、git、gh、jq、Bun 狀態。
   bootstrap-firstmate 取得 pinned Firstmate distro 並建立隔離 FM_HOME。
   quick    啟動 Firstmate-on-Herdr Quick run；四項 read-back 缺一就 fail closed。

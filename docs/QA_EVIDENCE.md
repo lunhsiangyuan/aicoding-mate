@@ -1,12 +1,14 @@
-# AI Coding Mate QA Evidence
+# Ari QA Evidence
 
 本文件保存 2026-07-31 在 macOS、Herdr 與 Codex Desktop 的實機 gate。它區分「已證明」「部分成功」「未證明」，不以測試綠燈或 task 曾啟動取代 runtime read-back。
 
 ## v0.3 單一入口增量 gate
 
-2026-07-31 重新 link local plugin 後，Herdr `plugin list` 讀回：
+2026-07-31 重新 link local plugin 後，Herdr plugin receipt 讀回：
 
-- plugin version：`0.3.0`
+- 使用者可見名稱：`Ari`
+- plugin version：`0.3.1`
+- 相容 plugin ID：`ai-coding-mate`
 - 一般主 pane：只有 `mate`
 - 輔助 pane：`context-branch`，只能由 selection action 使用
 - 主 pane command：`bun bin/aicoding-mate pane`
@@ -14,12 +16,14 @@
 真實 Herdr surface：
 
 - `aicoding-mate open --mode standard --placement tab` exit 0。
-- Herdr 回報 entrypoint `mate`、最終 pane `w1N:p9`、label `AI Coding Mate`。
-- `herdr pane read w1N:p9` 讀回 `目前模式：standard` 與互動 prompt。
+- Herdr 回報 entrypoint `mate`、最終 pane `w1N:pA`、label `Ari`。
+- `herdr pane read w1N:pA` 讀回 `目前模式：standard` 與互動 prompt。
 - 輸入 `/help` 後讀回五個模式與四個控制指令。
 - 輸入 `/expert` 後 prompt 由 `[standard]` 變成 `[expert]`。
 - 輸入 `/status` 後讀回 `mode=expert completed_turns=0 context_turns=0`。
 - 輸入未知 `/wat` 後讀回明確錯誤，模式仍為 Expert，沒有派工。
+- `process-info` 只有 `bun bin/aicoding-mate pane`，證明改名沒有另起 worker，也沒有改寫技術入口。
+- 驗收結束前以 `/standard` 還原預設模式；最終 `/status` 為 `mode=standard completed_turns=0 context_turns=0`，pane 保持開啟並聚焦。
 
 Automated gate：
 

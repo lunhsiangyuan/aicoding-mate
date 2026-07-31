@@ -7,7 +7,7 @@
 
 ## 1. 判斷摘要
 
-AI Coding Mate v0.1 可以把 Codex 原生 review handoff 當成增強路徑，但不能把它當成唯一完成路徑。
+Ari v0.1 可以把 Codex 原生 review handoff 當成增強路徑，但不能把它當成唯一完成路徑。
 
 目前可由本機 CLI、version-matched generated schema、官方 OpenAI docs 和官方 `openai/codex` source 證實的是：
 
@@ -136,7 +136,7 @@ Probe output 寫入本地 run registry，不寫入 upstream Firstmate clone。
 
 ### 5.2 JSON-RPC path
 
-1. Herdr plugin 啟動 AI Coding Mate terminal plugin。
+1. Herdr plugin 啟動 Ari terminal plugin。
 2. Adapter 以 child process 啟動：
 
    ```text
@@ -230,7 +230,7 @@ lineage:
   imported_at: iso8601
 ```
 
-如果 app-server path 不可用，fallback runner 可用 `codex review` 產生 `raw_review_text`，再由 AI Coding Mate normalization layer 萃取 findings；此時 `review.delivery = cli_fallback`，`review_thread_id = null`，`desktop_deeplink = unverifiable`。
+如果 app-server path 不可用，fallback runner 可用 `codex review` 產生 `raw_review_text`，再由 Ari normalization layer 萃取 findings；此時 `review.delivery = cli_fallback`，`review_thread_id = null`，`desktop_deeplink = unverifiable`。
 
 ## 6. No-go gates
 

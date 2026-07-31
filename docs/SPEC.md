@@ -1,13 +1,15 @@
-# AI Coding Mate 產品規格
+# Ari 產品規格
 
 - 狀態：Approved
 - 日期：2026-07-30
+- 顯示名稱：`Ari`
+- Technical identifier：`aicoding-mate`（相容性保留）
 - Repository：`lunhsiangyuan/aicoding-mate`
 - 主要使用者：不想管理低階技術細節的 AI vibe coder
 
 ## 1. 產品目標
 
-AI Coding Mate 要讓使用者以架構師的高度操作多模型 coding agents。
+Ari 要讓使用者以架構師的高度操作多模型 coding agents。
 
 使用者負責：
 
