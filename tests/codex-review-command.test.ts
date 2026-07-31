@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
+import { FileFirstmateWorkflowAuthority } from "../src/authority/firstmate-workflow-authority.ts";
 import { sourceLineageHash } from "../src/contracts/index.ts";
 import {
   runCodexReviewFromHerdrSelection,
@@ -295,14 +296,17 @@ describe("Codex review command bridge", () => {
       contextJson: invocation(),
       cwd: root,
       env: {},
-      decisionAuthority: {
-        issueDecision() {
-          throw new Error("authority_store_unavailable");
+      workflowAuthority: new FileFirstmateWorkflowAuthority({
+        stateDir,
+        decisionStore: {
+          issueDecision() {
+            throw new Error("authority_store_unavailable");
+          },
+          readDecision() {
+            return undefined;
+          },
         },
-        readDecision() {
-          return undefined;
-        },
-      },
+      }),
       ports: {
         createAppServerReviewPort() {
           appServerCreated = true;

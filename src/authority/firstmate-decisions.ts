@@ -64,7 +64,7 @@ export function createFirstmateWorkflowDecision(
     roleAssignments,
     stageAssignments: highIntensity
       ? [
-          { stageId: "research", role: "author", barrierId: "research_complete" },
+          { stageId: "research", role: "search", barrierId: "research_complete" },
           { stageId: "author", role: "author", barrierId: "author_complete" },
           {
             stageId: "challenger",

@@ -12,7 +12,7 @@ import type {
 } from "../contracts/index.ts";
 import { routingDeterminismKey } from "../contracts/index.ts";
 
-export type HighIntensityRole = "author" | "challenger" | "judge";
+export type HighIntensityRole = "search" | "author" | "challenger" | "judge";
 export type ResearchCategory = "confirmed" | "candidate" | "inference" | "unknown";
 export type HighIntensityStopReason =
   | "judge_accepted"
@@ -101,6 +101,10 @@ export function routeHighIntensityWorkflow(
     return { status: "failed_closed", reason: "invalid_availability_snapshot" };
   }
 
+  const search = selectCandidate(availability, "search", [], [], "search");
+  if (!search) {
+    return { status: "failed_closed", reason: "invalid_availability_snapshot" };
+  }
   const author = selectCandidate(availability, "implementation", [], [], "author");
   if (!author) {
     return { status: "failed_closed", reason: "invalid_availability_snapshot" };
@@ -132,6 +136,7 @@ export function routeHighIntensityWorkflow(
     availabilitySnapshot: availability,
   };
   const roleAssignments = [
+    assignmentFor("search", search, "recall-first discovery; floor=search"),
     assignmentFor("author", author, "adversarial author; floor=implementation"),
     assignmentFor(
       "challenger",

@@ -6,7 +6,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   assertDecisionReadyReport,
   assertWorkflowDecisionEnvelope,
-  lookupExactStageAssignment,
   type AvailabilityCandidate,
   type AvailabilitySnapshot,
   type DecisionReadyReport,
@@ -18,17 +17,17 @@ import {
   type WorkflowDecisionEnvelope,
 } from "../contracts/index.ts";
 import {
-  createFirstmateWorkflowDecision,
   workflowDispatchIdempotencyKey,
 } from "../authority/firstmate-decisions.ts";
 import {
-  FileFirstmateDecisionAuthority,
   isFirstmateDecisionReceipt,
-  resolveFirstmateAuthorityRoot,
   verifyFirstmateDecisionReceipt,
-  type FirstmateDecisionAuthorityPort,
   type FirstmateDecisionReceipt,
 } from "../authority/firstmate-decision-authority.ts";
+import {
+  FileFirstmateWorkflowAuthority,
+  type FirstmateWorkflowAuthorityPort,
+} from "../authority/firstmate-workflow-authority.ts";
 import {
   createQuickRun,
   quickWorkflowExecutionMatches,
@@ -41,7 +40,7 @@ import {
   type QuickWorkflowExecution,
 } from "../quick.ts";
 import {
-  planStandardWorkflow,
+  normalizeStandardInput,
   type NormalizedStandardInput,
   type StandardWorkflowInput,
 } from "../routing/standard.ts";
@@ -163,7 +162,7 @@ export interface StandardRunOptions {
   readonly availability?: AvailabilitySnapshot;
   readonly now?: () => string;
   readonly ports?: StandardRuntimePorts;
-  readonly decisionAuthority?: FirstmateDecisionAuthorityPort;
+  readonly workflowAuthority?: FirstmateWorkflowAuthorityPort;
 }
 
 export interface StandardRunResult {
@@ -233,7 +232,7 @@ export async function createStandardRun(
       "main report must remain concise",
     ],
   };
-  const plan = planStandardWorkflow({ input, availability });
+  const normalizedInput = normalizeStandardInput(input);
   const source = sourceFromEnvironment(options.env);
   const provisionalId =
     `standard-invalid-${compactTimestamp(createdAt)}-${randomUUID()}`;
@@ -252,9 +251,8 @@ export async function createStandardRun(
     projectDir,
     source,
     availability,
-    normalizedInput: plan.normalizedInput,
-    routingDecision:
-      plan.routing.status === "resolved" ? plan.routing.decision : null,
+    normalizedInput,
+    routingDecision: null,
     workflowDecision: null,
     workflowDecisionReceipt: null,
     author: null,
@@ -290,21 +288,32 @@ export async function createStandardRun(
       "standard_requires_complete_herdr_lineage",
     );
   }
-  if (plan.routing.status !== "resolved") {
-    return blocked(
-      provisional,
+  const workflowAuthority =
+    options.workflowAuthority
+    ?? new FileFirstmateWorkflowAuthority({
+      stateDir,
+      env: options.env,
       now,
-      `routing_${plan.routing.status}:${plan.routing.reason}`,
-    );
-  }
-  const workflowDecision = createFirstmateWorkflowDecision({
-    recipe: "standard",
-    intentHash: plan.normalizedInput.hash,
-    configVersion: plan.config.versionHash,
+    });
+  const decided = workflowAuthority.decideStandard({
+    workflowInput: input,
     availability,
-    routingDecision: plan.routing.decision,
     source,
   });
+  if (decided.status !== "resolved") {
+    return blocked(
+      {
+        ...provisional,
+        normalizedInput: decided.normalizedInput,
+        routingDecision: decided.routingDecision,
+      },
+      now,
+      decided.reason,
+    );
+  }
+  const workflowDecision = decided.workflowDecision;
+  const workflowDecisionReceipt = decided.receipt;
+  const routingDecision = decided.routingDecision;
   const authorTask = architectureTask(options.task, workflowDecision);
   const authorScopeBlocker = validateQuickTaskScope(authorTask, projectDir);
   if (authorScopeBlocker !== undefined) {
@@ -314,30 +323,6 @@ export async function createStandardRun(
       `author_scope_invalid:${authorScopeBlocker}`,
     );
   }
-  const decisionAuthority =
-    options.decisionAuthority
-    ?? new FileFirstmateDecisionAuthority({
-      rootDir: resolveFirstmateAuthorityRoot(stateDir, options.env),
-      now,
-    });
-  let workflowDecisionReceipt: FirstmateDecisionReceipt;
-  try {
-    workflowDecisionReceipt = decisionAuthority.issueDecision(workflowDecision);
-    if (
-      decisionAuthority.readDecision(
-        workflowDecision,
-        workflowDecisionReceipt.receiptPath,
-      ) === undefined
-    ) {
-      throw new Error("firstmate_decision_receipt_readback_failed");
-    }
-  } catch (error) {
-    return blocked(
-      { ...provisional, workflowDecision },
-      now,
-      `firstmate_decision_issuance_failed:${compactError(error)}`,
-    );
-  }
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
   });
@@ -345,15 +330,15 @@ export async function createStandardRun(
     intent: {
       workflow: "standard",
       projectDir,
-      task: plan.normalizedInput.task,
+      task: decided.normalizedInput.task,
       source,
       inputs: {
-        normalizedInputHash: plan.normalizedInput.hash,
-        risk: plan.normalizedInput.risk,
-        boundaries: plan.normalizedInput.boundaries,
+        normalizedInputHash: decided.normalizedInput.hash,
+        risk: decided.normalizedInput.risk,
+        boundaries: decided.normalizedInput.boundaries,
       },
       availabilitySnapshotId: availability.id,
-      routingDecisionVersion: plan.routing.decision.requestKey,
+      routingDecisionVersion: routingDecision.requestKey,
       decisionVersion: workflowDecision.workflowDecisionId,
     },
     owner: `standard:${process.pid}:${randomUUID()}`,
@@ -366,7 +351,8 @@ export async function createStandardRun(
     ...provisional,
     id,
     recordPath,
-    routingDecision: plan.routing.decision,
+    normalizedInput: decided.normalizedInput,
+    routingDecision,
     workflowDecision,
     workflowDecisionReceipt,
     authority: {
@@ -383,7 +369,11 @@ export async function createStandardRun(
       projectDir,
       env: options.env,
     });
-  const authorStage = lookupExactStageAssignment(workflowDecision, "author");
+  const authorStage = workflowAuthority.authorizeStage({
+    workflowDecision,
+    receipt: workflowDecisionReceipt,
+    stageId: "author",
+  });
   const authorDispatchKey = workflowDispatchIdempotencyKey(
     opened.run.runId,
     workflowDecision.decisionHash,
@@ -401,10 +391,11 @@ export async function createStandardRun(
     source,
     task: authorTask,
   };
-  const reviewerStage = lookupExactStageAssignment(
+  const reviewerStage = workflowAuthority.authorizeStage({
     workflowDecision,
-    "reviewer",
-  );
+    receipt: workflowDecisionReceipt,
+    stageId: "reviewer",
+  });
   const reviewerAssignment = reviewerStage.roleAssignment;
   const reviewDispatchKey = workflowDispatchIdempotencyKey(
     opened.run.runId,
@@ -721,7 +712,7 @@ export async function createStandardRun(
       });
       try {
         review = await ports.review(
-          buildReviewPrompt(options.task, author.summary, plan.routing.decision),
+          buildReviewPrompt(options.task, author.summary, routingDecision),
           reviewerAssignment,
           reviewExecution,
         );
@@ -799,7 +790,7 @@ export async function createStandardRun(
     reviewAttempts.push(review);
 
     let reviewDocument = parseReviewDocument(review.rawOutput);
-    if (reviewDocument === null && plan.config.recipe.repairRounds > 0) {
+    if (reviewDocument === null && decided.repairRounds > 0) {
       const repairWasReconciled = reconciledRepair !== null;
       let repairedReview = reconciledRepair;
       if (repairedReview === null) {
@@ -917,10 +908,10 @@ export async function createStandardRun(
 
     const report = composeRuntimeReport({
       reviewDocument,
-      normalizedInput: plan.normalizedInput,
-      routingDecision: plan.routing.decision,
+      normalizedInput: decided.normalizedInput,
+      routingDecision,
       workflowDecision,
-      configVersionHash: plan.config.versionHash,
+      configVersionHash: decided.configVersion,
       availability,
       author,
       review,

@@ -5,7 +5,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   assertDecisionReadyReport,
   assertWorkflowDecisionEnvelope,
-  lookupExactStageAssignment,
   type AvailabilitySnapshot,
   type DecisionReadyReport,
   type RoleAssignment,
@@ -14,17 +13,17 @@ import {
   type WorkflowDecisionEnvelope,
 } from "../contracts/index.ts";
 import {
-  createFirstmateWorkflowDecision,
   workflowDispatchIdempotencyKey,
 } from "../authority/firstmate-decisions.ts";
 import {
-  FileFirstmateDecisionAuthority,
   isFirstmateDecisionReceipt,
-  resolveFirstmateAuthorityRoot,
   verifyFirstmateDecisionReceipt,
-  type FirstmateDecisionAuthorityPort,
   type FirstmateDecisionReceipt,
 } from "../authority/firstmate-decision-authority.ts";
+import {
+  FileFirstmateWorkflowAuthority,
+  type FirstmateWorkflowAuthorityPort,
+} from "../authority/firstmate-workflow-authority.ts";
 import {
   FileRunRegistry,
   type RegistryLease,
@@ -38,7 +37,6 @@ import {
   composeHighIntensityReport,
   partitionRecallFirstResearch,
   reviewCoverage,
-  routeHighIntensityWorkflow,
   runAdversarialReview,
   type AdversarialReviewResult,
   type AdversarialRound,
@@ -135,7 +133,7 @@ export interface HighIntensityRunOptions {
   readonly recipe?: "adversarial" | "research";
   readonly source?: SourceLineage;
   readonly now?: () => string;
-  readonly decisionAuthority?: FirstmateDecisionAuthorityPort;
+  readonly workflowAuthority?: FirstmateWorkflowAuthorityPort;
 }
 
 export interface HighIntensityRunResult {
@@ -166,7 +164,6 @@ export async function createHighIntensityRun(
   const now = options.now ?? (() => new Date().toISOString());
   const createdAt = now();
   const stateDir = resolve(options.stateDir);
-  const routed = routeHighIntensityWorkflow(options.input, options.availability);
   const provisionalId =
     `high-intensity-invalid-${compactTimestamp(createdAt)}-${randomUUID()}`;
   const provisional: HighIntensityRunRecord = {
@@ -178,7 +175,7 @@ export async function createHighIntensityRun(
     input: options.input,
     inputHash: inputHash(options.input),
     availability: options.availability,
-    routingDecision: routed.status === "resolved" ? routed.decision : null,
+    routingDecision: null,
     workflowDecision: null,
     workflowDecisionReceipt: null,
     calls: [],
@@ -200,52 +197,37 @@ export async function createHighIntensityRun(
     ),
   };
 
-  if (routed.status !== "resolved") {
-    return blocked(
-      provisional,
-      now,
-      `routing_${routed.status}:${routed.reason}`,
-    );
-  }
-
   const recipe = options.recipe ?? "adversarial";
   const source = options.source;
   if (!isCompleteSourceLineage(source)) {
     return blocked(provisional, now, "source_lineage_incomplete");
   }
-  const workflowDecision = createFirstmateWorkflowDecision({
-    recipe,
-    intentHash: inputHash(options.input),
-    configVersion:
-      options.input.configVersionHash ?? `${recipe}-high-intensity-v0.2`,
-    availability: options.availability,
-    routingDecision: routed.decision,
-    source,
-  });
-  const decisionAuthority =
-    options.decisionAuthority
-    ?? new FileFirstmateDecisionAuthority({
-      rootDir: resolveFirstmateAuthorityRoot(stateDir, options.env),
+  const workflowAuthority =
+    options.workflowAuthority
+    ?? new FileFirstmateWorkflowAuthority({
+      stateDir,
+      env: options.env,
       now,
     });
-  let workflowDecisionReceipt: FirstmateDecisionReceipt;
-  try {
-    workflowDecisionReceipt = decisionAuthority.issueDecision(workflowDecision);
-    if (
-      decisionAuthority.readDecision(
-        workflowDecision,
-        workflowDecisionReceipt.receiptPath,
-      ) === undefined
-    ) {
-      throw new Error("firstmate_decision_receipt_readback_failed");
-    }
-  } catch (error) {
+  const decided = workflowAuthority.decideHighIntensity({
+    workflowInput: options.input,
+    availability: options.availability,
+    source,
+    recipe,
+  });
+  if (decided.status !== "resolved") {
     return blocked(
-      { ...provisional, workflowDecision },
+      {
+        ...provisional,
+        routingDecision: decided.routingDecision,
+      },
       now,
-      `firstmate_decision_issuance_failed:${compactAuthorityError(error)}`,
+      decided.reason,
     );
   }
+  const routingDecision = decided.routingDecision;
+  const workflowDecision = decided.workflowDecision;
+  const workflowDecisionReceipt = decided.receipt;
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
   });
@@ -260,7 +242,7 @@ export async function createHighIntensityRun(
         recipe,
       },
       availabilitySnapshotId: options.availability.id,
-      routingDecisionVersion: routed.decision.requestKey,
+      routingDecisionVersion: routingDecision.requestKey,
       decisionVersion: workflowDecision.workflowDecisionId,
     },
     owner: `high-intensity:${process.pid}:${randomUUID()}`,
@@ -272,7 +254,7 @@ export async function createHighIntensityRun(
   const base: HighIntensityRunRecord = {
     ...provisional,
     id,
-    routingDecision: routed.decision,
+    routingDecision,
     workflowDecision,
     workflowDecisionReceipt,
     recordPath,
@@ -318,7 +300,11 @@ export async function createHighIntensityRun(
   const lease = opened.lease;
   writeHighIntensityRunRecord(base);
   const stageAssignment = (stageId: HighIntensityCallPhase): RoleAssignment =>
-    lookupExactStageAssignment(workflowDecision, stageId).roleAssignment;
+    workflowAuthority.authorizeStage({
+      workflowDecision,
+      receipt: workflowDecisionReceipt,
+      stageId,
+    }).roleAssignment;
   const calls: HighIntensityCallRecord[] = [];
   try {
     const researchResult = await executeModel({
@@ -513,7 +499,7 @@ export async function createHighIntensityRun(
 
     const composed = composeHighIntensityReport({
       input: options.input,
-      routingDecision: routed.decision,
+      routingDecision,
       availability: options.availability,
       research,
       coverage,
@@ -1082,12 +1068,6 @@ function isAuthorityRecord(
       || authority.runtimeAuthority === "canonical_run_registry_verified"
     )
     && (hasCanonicalIdentity || notReached);
-}
-
-function compactAuthorityError(error: unknown): string {
-  return error instanceof Error
-    ? error.message.replace(/\s+/g, " ").trim()
-    : "unknown_error";
 }
 
 function isDecisionReadyReportCandidate(

@@ -4,17 +4,17 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 import {
-  createFirstmateNativeReviewDecision,
   workflowDispatchIdempotencyKey,
 } from "../authority/firstmate-decisions.ts";
 import {
-  FileFirstmateDecisionAuthority,
   isFirstmateDecisionReceipt,
-  resolveFirstmateAuthorityRoot,
   verifyFirstmateDecisionReceipt,
-  type FirstmateDecisionAuthorityPort,
   type FirstmateDecisionReceipt,
 } from "../authority/firstmate-decision-authority.ts";
+import {
+  FileFirstmateWorkflowAuthority,
+  type FirstmateWorkflowAuthorityPort,
+} from "../authority/firstmate-workflow-authority.ts";
 import {
   parseHerdrBranchContext,
   type BranchFailureReason,
@@ -23,7 +23,6 @@ import {
 import {
   assertWorkflowDecisionEnvelope,
   type WorkflowDecisionEnvelope,
-  type WorkflowRoleAssignment,
 } from "../contracts/index.ts";
 import {
   createReviewCapsule,
@@ -48,7 +47,7 @@ export interface CodexReviewCommandOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => string;
   readonly ports?: CodexReviewCommandPorts;
-  readonly decisionAuthority?: FirstmateDecisionAuthorityPort;
+  readonly workflowAuthority?: FirstmateWorkflowAuthorityPort;
 }
 
 export interface CodexReviewCommandPorts {
@@ -163,49 +162,29 @@ export async function runCodexReviewFromHerdrSelection(
   );
   if (!enriched.ok) return fail(enriched.reason);
 
-  const model =
-    nonEmpty(options.env.ACM_CODEX_REVIEW_MODEL) ?? "gpt-5.6-sol";
-  const reviewer: WorkflowRoleAssignment = {
-    role: "reviewer",
-    alias: "openai-native-reviewer",
-    provider: "openai",
-    family: "openai",
-    resolvedModel: model,
-    capabilityTier: "architecture",
-    reason:
-      "Firstmate assigns Codex native review so the adapter only executes an exact reviewer assignment.",
-  };
   const intentHash = sha256(JSON.stringify({
     source: enriched.value.source,
     selectedText: enriched.value.selectedText,
     target: "herdr-selection",
   }));
-  const workflowDecision = createFirstmateNativeReviewDecision({
-    intentHash,
-    configVersion: "native-review-v0.2",
-    source: enriched.value.source,
-    reviewer,
-  });
-  const decisionAuthority =
-    options.decisionAuthority
-    ?? new FileFirstmateDecisionAuthority({
-      rootDir: resolveFirstmateAuthorityRoot(stateDir, options.env),
+  const workflowAuthority =
+    options.workflowAuthority
+    ?? new FileFirstmateWorkflowAuthority({
+      stateDir,
+      env: options.env,
       now,
     });
-  let workflowDecisionReceipt: FirstmateDecisionReceipt;
-  try {
-    workflowDecisionReceipt = decisionAuthority.issueDecision(workflowDecision);
-    if (
-      decisionAuthority.readDecision(
-        workflowDecision,
-        workflowDecisionReceipt.receiptPath,
-      ) === undefined
-    ) {
-      return fail("firstmate_decision_issuance_failed");
-    }
-  } catch {
+  const decided = workflowAuthority.decideNativeReview({
+    intentHash,
+    source: enriched.value.source,
+  });
+  if (decided.status !== "resolved") {
     return fail("firstmate_decision_issuance_failed");
   }
+  const reviewer = decided.reviewer;
+  const workflowDecision = decided.workflowDecision;
+  const workflowDecisionReceipt = decided.receipt;
+  const model = reviewer.resolvedModel;
   const registry = new FileRunRegistry({
     rootDir: join(stateDir, "run-registry"),
   });

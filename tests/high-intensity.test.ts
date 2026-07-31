@@ -26,6 +26,15 @@ const availability: AvailabilitySnapshot = {
   capturedAt: "2026-07-30T18:00:00.000Z",
   candidates: [
     {
+      alias: "openai-search",
+      provider: "openai",
+      family: "openai",
+      resolvedModel: "configured-openai-search",
+      capabilityTier: "search",
+      state: "available",
+      reason: null,
+    },
+    {
       alias: "openai-author",
       provider: "openai",
       family: "openai",
@@ -100,9 +109,12 @@ describe("high-intensity workflow core", () => {
     if (routed.status !== "resolved") throw new Error("expected resolved route");
 
     const author = routed.decision.roleAssignments.find((assignment) => assignment.role === "author");
+    const search = routed.decision.roleAssignments.find((assignment) => assignment.role === "search");
     const challenger = routed.decision.roleAssignments.find((assignment) => assignment.role === "challenger");
     const judge = routed.decision.roleAssignments.find((assignment) => assignment.role === "judge");
 
+    expect(search?.capabilityTier).toBe("search");
+    expect(search?.resolvedModel).toBe("configured-openai-search");
     expect(author?.family).toBe("openai");
     expect(challenger?.family).toBe("anthropic");
     expect(challenger?.family).not.toBe(author?.family);

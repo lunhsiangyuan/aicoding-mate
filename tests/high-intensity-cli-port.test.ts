@@ -37,6 +37,7 @@ describe("high-intensity CLI port", () => {
       env: {},
       now: () => "2026-07-31T02:00:00.000Z",
       runner: recordingRunner(calls, [
+        "gpt-5.4-mini",
         "gpt-5.6-sol-high",
         "claude-fable-5-thinking-high",
         "cursor-grok-4.5-high",
@@ -59,6 +60,14 @@ describe("high-intensity CLI port", () => {
       state: candidate.state,
       reason: candidate.reason,
     }))).toEqual([
+      {
+        alias: "openai-search",
+        family: "openai",
+        model: "gpt-5.4-mini",
+        tier: "search",
+        state: "available",
+        reason: null,
+      },
       {
         alias: "openai-author",
         family: "openai",
@@ -88,6 +97,7 @@ describe("high-intensity CLI port", () => {
 
   test("allows env overrides without changing adapter mechanics", () => {
     const mappings = resolveHighIntensityCliMappings({
+      ACM_HIGH_INTENSITY_SEARCH_MODEL: "custom-search-model",
       ACM_HIGH_INTENSITY_AUTHOR_ALIAS: "custom-author",
       ACM_HIGH_INTENSITY_AUTHOR_MODEL: "custom-openai-model",
       ACM_HIGH_INTENSITY_AUTHOR_FAMILY: "openai",
@@ -97,6 +107,12 @@ describe("high-intensity CLI port", () => {
     });
 
     expect(mappings).toEqual([
+      {
+        role: "search",
+        alias: "openai-search",
+        model: "custom-search-model",
+        family: "openai",
+      },
       {
         role: "author",
         alias: "custom-author",
@@ -179,6 +195,7 @@ describe("high-intensity CLI port", () => {
       now: () => "2026-07-31T02:00:00.000Z",
     });
     expect(partial.candidates.map((candidate) => candidate.reason)).toEqual([
+      "model_not_listed",
       null,
       "model_not_listed",
       "model_not_listed",
@@ -198,8 +215,10 @@ describe("high-intensity CLI port", () => {
       "unavailable",
       "unavailable",
       "unavailable",
+      "unavailable",
     ]);
     expect(failed.candidates.map((candidate) => candidate.reason)).toEqual([
+      "agent_list_models_failed",
       "agent_list_models_failed",
       "agent_list_models_failed",
       "agent_list_models_failed",

@@ -5,6 +5,10 @@ import type {
   AvailabilityCandidate,
   AvailabilitySnapshot,
 } from "../contracts/index.ts";
+import {
+  loadHighIntensityModelConfig,
+  type HighIntensityConfiguredModel,
+} from "../config/runtime-models.ts";
 import type {
   HighIntensityModelPort,
   HighIntensityModelRequest,
@@ -35,33 +39,7 @@ export interface HighIntensityCliOptions {
   readonly now?: () => string;
 }
 
-export interface HighIntensityCliModelMapping {
-  readonly role: "author" | "challenger" | "judge";
-  readonly alias: string;
-  readonly model: string;
-  readonly family: string;
-}
-
-const defaultMappings: readonly HighIntensityCliModelMapping[] = [
-  {
-    role: "author",
-    alias: "openai-author",
-    model: "gpt-5.6-sol-high",
-    family: "openai",
-  },
-  {
-    role: "challenger",
-    alias: "anthropic-challenger",
-    model: "claude-fable-5-thinking-high",
-    family: "anthropic",
-  },
-  {
-    role: "judge",
-    alias: "xai-judge",
-    model: "cursor-grok-4.5-high",
-    family: "xai",
-  },
-];
+export type HighIntensityCliModelMapping = HighIntensityConfiguredModel;
 
 export function probeHighIntensityCliAvailability(
   options: HighIntensityCliOptions,
@@ -158,7 +136,7 @@ export function resolveHighIntensityCliMappings(
 }
 
 function resolveMappings(env: NodeJS.ProcessEnv): readonly HighIntensityCliModelMapping[] {
-  return defaultMappings.map((mapping) => ({
+  return loadHighIntensityModelConfig(env).map((mapping) => ({
     role: mapping.role,
     alias: env[`ACM_HIGH_INTENSITY_${mapping.role.toUpperCase()}_ALIAS`] ?? mapping.alias,
     model: env[`ACM_HIGH_INTENSITY_${mapping.role.toUpperCase()}_MODEL`] ?? mapping.model,
@@ -177,7 +155,12 @@ function candidateFromMapping(
     provider: mapping.family,
     family: mapping.family,
     resolvedModel: mapping.model,
-    capabilityTier: mapping.role === "judge" ? "architecture" : "implementation",
+    capabilityTier:
+      mapping.role === "judge"
+        ? "architecture"
+        : mapping.role === "search"
+        ? "search"
+        : "implementation",
     state: listSucceeded && listed ? "available" : "unavailable",
     reason: listSucceeded
       ? listed ? null : "model_not_listed"

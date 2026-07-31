@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
+import { FileFirstmateWorkflowAuthority } from "../src/authority/firstmate-workflow-authority.ts";
 import type {
   AvailabilitySnapshot,
   FirstmateDispatchRequest,
@@ -777,14 +778,17 @@ describe("standard runtime integration", () => {
       ports: successfulPorts(() => {
         dispatched = true;
       }),
-      decisionAuthority: {
-        issueDecision() {
-          throw new Error("authority_store_unavailable");
+      workflowAuthority: new FileFirstmateWorkflowAuthority({
+        stateDir: join(root, "state"),
+        decisionStore: {
+          issueDecision() {
+            throw new Error("authority_store_unavailable");
+          },
+          readDecision() {
+            return undefined;
+          },
         },
-        readDecision() {
-          return undefined;
-        },
-      },
+      }),
     });
 
     expect(result.ok).toBe(false);

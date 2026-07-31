@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
+import { FileFirstmateWorkflowAuthority } from "../src/authority/firstmate-workflow-authority.ts";
 import type {
   AvailabilitySnapshot,
   SourceLineage,
@@ -31,6 +32,15 @@ const availability: AvailabilitySnapshot = {
   id: "availability-high-runtime-1",
   capturedAt: "2026-07-31T01:00:00.000Z",
   candidates: [
+    {
+      alias: "openai-search",
+      provider: "openai",
+      family: "openai",
+      resolvedModel: "configured-openai-search",
+      capabilityTier: "search",
+      state: "available",
+      reason: null,
+    },
     {
       alias: "openai-author",
       provider: "openai",
@@ -112,6 +122,8 @@ describe("high-intensity runtime", () => {
       throw new Error("expected complete routing assignments");
     }
     expect(requests[1]?.assignment).toEqual(authorAssignment);
+    expect(requests[0]?.assignment.role).toBe("search");
+    expect(requests[0]?.assignment.capabilityTier).toBe("search");
     expect(requests[2]?.assignment).toEqual(challengerAssignment);
     expect(requests[3]?.assignment).toEqual(judgeAssignment);
     expect(requests[6]?.prompt).toContain("second-round revised claim");
@@ -365,14 +377,17 @@ describe("high-intensity runtime", () => {
       source,
       modelPort: scriptedPort(requests),
       now: () => "2026-07-31T01:00:00.000Z",
-      decisionAuthority: {
-        issueDecision() {
-          throw new Error("authority_store_unavailable");
+      workflowAuthority: new FileFirstmateWorkflowAuthority({
+        stateDir,
+        decisionStore: {
+          issueDecision() {
+            throw new Error("authority_store_unavailable");
+          },
+          readDecision() {
+            return undefined;
+          },
         },
-        readDecision() {
-          return undefined;
-        },
-      },
+      }),
     });
 
     expect(result.ok).toBe(false);
