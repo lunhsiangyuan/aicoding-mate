@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { runDoctor } from "./probe.ts";
@@ -687,71 +687,63 @@ function runReadRunCommand(args: string[], io: CliIO): number {
   const recordPath = resolve(io.cwd, args[0]);
   const quickRecord = readRunRecord(recordPath);
   if (quickRecord) {
-    const consistency = verifyPaneRecordConsistency(quickRecord);
+    const consistency = {
+      ok: false,
+      reason: "quick_record_historical_unverified",
+    };
     io.stdout.write(
       `${JSON.stringify({ record: quickRecord, consistency }, null, 2)}\n`,
     );
+    return 1;
+  }
+  const trustedAuthorityRoot = resolveFirstmateAuthorityRoot(
+    stateDir(io),
+    io.env,
+  );
+  const standardRecord = readStandardRunRecord(
+    recordPath,
+    trustedAuthorityRoot,
+  );
+  if (standardRecord) {
+    const consistency = {
+      ok:
+        standardRecord.status === "completed"
+        && standardRecord.claims.reportReadbackMatchesPane,
+      reason:
+        standardRecord.status !== "completed"
+          ? `standard_status_${standardRecord.status}`
+          : standardRecord.claims.reportReadbackMatchesPane
+          ? null
+          : "standard_pane_readback_missing",
+    };
+    io.stdout.write(
+      `${JSON.stringify({ record: standardRecord, consistency }, null, 2)}\n`,
+    );
     return consistency.ok ? 0 : 1;
   }
-  for (const trustedAuthorityRoot of readRunAuthorityRoots(io)) {
-    const standardRecord = readStandardRunRecord(
-      recordPath,
-      trustedAuthorityRoot,
+  const highIntensityRecord = readHighIntensityRunRecord(
+    recordPath,
+    trustedAuthorityRoot,
+  );
+  if (highIntensityRecord) {
+    const consistency = {
+      ok: highIntensityRecord.status === "completed",
+      reason:
+        highIntensityRecord.status === "completed"
+          ? null
+          : `high_intensity_status_${highIntensityRecord.status}`,
+    };
+    io.stdout.write(
+      `${JSON.stringify(
+        { record: highIntensityRecord, consistency },
+        null,
+        2,
+      )}\n`,
     );
-    if (standardRecord) {
-      const consistency = {
-        ok:
-          standardRecord.status === "completed"
-          && standardRecord.claims.reportReadbackMatchesPane,
-        reason:
-          standardRecord.status !== "completed"
-            ? `standard_status_${standardRecord.status}`
-            : standardRecord.claims.reportReadbackMatchesPane
-            ? null
-            : "standard_pane_readback_missing",
-      };
-      io.stdout.write(
-        `${JSON.stringify({ record: standardRecord, consistency }, null, 2)}\n`,
-      );
-      return consistency.ok ? 0 : 1;
-    }
-    const highIntensityRecord = readHighIntensityRunRecord(
-      recordPath,
-      trustedAuthorityRoot,
-    );
-    if (highIntensityRecord) {
-      const consistency = {
-        ok: highIntensityRecord.status === "completed",
-        reason:
-          highIntensityRecord.status === "completed"
-            ? null
-            : `high_intensity_status_${highIntensityRecord.status}`,
-      };
-      io.stdout.write(
-        `${JSON.stringify(
-          { record: highIntensityRecord, consistency },
-          null,
-          2,
-        )}\n`,
-      );
-      return consistency.ok ? 0 : 1;
-    }
+    return consistency.ok ? 0 : 1;
   }
   io.stderr.write(`無法讀取 run record: ${args[0]}\n`);
   return 1;
-}
-
-function readRunAuthorityRoots(io: CliIO): readonly string[] {
-  const root = stateDir(io);
-  return Array.from(
-    new Set([
-      resolveFirstmateAuthorityRoot(root, io.env),
-      resolveFirstmateAuthorityRoot(root, {
-        ...io.env,
-        FM_HOME: join(root, "fm-home"),
-      }),
-    ]),
-  );
 }
 
 function runDoctorCommand(args: string[], io: CliIO): number {
@@ -935,7 +927,7 @@ function helpText(): string {
   research 保留 discovery 分母、成熟度與 coverage，再交由跨模型 Judge 裁決。
   context-branch-start 從 Herdr 選取內容建立同 lineage 分支，複誦確認後送回來源任務。
   codex-review-start 從 Herdr 選取內容建立 detached Codex review；UI request 與 review 完成狀態分開回報。
-  read-run 重新讀取 durable run record 並檢查 pane/result 一致性。
+  read-run 驗證受簽章的 managed record；Quick 歷史 record 只供閱讀，不標示 verified。
   pane     Herdr plugin pane entrypoint，輸出可讀診斷面。
 `;
 }

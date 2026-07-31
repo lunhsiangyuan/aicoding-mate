@@ -118,7 +118,26 @@ describe("cli", () => {
     expect(buffer.stderr).toContain("需要任務文字");
   });
 
-  test("high-intensity final read-back trusts FM_HOME authority root", async () => {
+  test("Quick read-run is historical and never claims verified success", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-cli-quick-read-"));
+    const recordPath = join(root, "quick.json");
+    writeFileSync(
+      recordPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        recipe: "quick",
+        id: "quick-historical",
+      }),
+    );
+    const buffer = new BufferIO();
+    const code = await main(["read-run", recordPath], buffer.io());
+
+    expect(code).toBe(1);
+    expect(buffer.stdout).toContain("quick_record_historical_unverified");
+    expect(buffer.stdout).toContain('"ok": false');
+  });
+
+  test("high-intensity final read-back trusts only configured FM_HOME root", async () => {
     const root = mkdtempSync(join(tmpdir(), "aicoding-mate-cli-fm-home-"));
     const binDir = join(root, "bin");
     const stateDir = join(root, "state");
@@ -189,6 +208,7 @@ describe("cli", () => {
       ],
       readBuffer.io({
         ACM_STATE_DIR: stateDir,
+        FM_HOME: fmHome,
       }),
     );
     expect(readCode).toBe(0);
@@ -196,5 +216,20 @@ describe("cli", () => {
       '"workflowAuthority": "firstmate_verified"',
     );
     expect(readBuffer.stdout).toContain('"ok": true');
+
+    const alternateRootBuffer = new BufferIO();
+    const alternateRootCode = await main(
+      [
+        "read-run",
+        join(stateDir, "high-intensity-runs", recordName),
+      ],
+      alternateRootBuffer.io({
+        ACM_STATE_DIR: stateDir,
+        FM_HOME: join(root, "alternate-fm-home"),
+      }),
+    );
+    expect(alternateRootCode).toBe(1);
+    expect(alternateRootBuffer.stderr).toContain("無法讀取 run record");
+    expect(alternateRootBuffer.stdout).not.toContain('"ok": true');
   });
 });
