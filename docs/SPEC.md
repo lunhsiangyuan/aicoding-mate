@@ -263,6 +263,8 @@ v0.2 必須同時具備：
 - Firstmate 是唯一 Workflow Authority，Adapter 不做 routing、fallback、retry 或 report 決策。
 - canonical Run Registry 具備 stable idempotency、lease、strict read-back、lineage 與可證明的單尾端 torn-write recovery。
 
+2026-07-31 authority core 已實作並通過完整 automated gate；真實 Herdr surface 目前完成 Standard end-to-end 與 Native task/UI handoff。Adversarial／Research 真實外部模型執行與 Native completed capsule 尚未取得實機 evidence，因此完整 v0.2 production release 仍未符合「每項驗收情境」這一條；不得以受控 tests 取代。
+
 ## 9. v0.2 核心：兩個 Authority
 
 v0.2 不以增加更多 provider 或 UI 為主，而是完成「薄控制層」的責任收斂。以下兩項是 v0.2 的必要條件，不是可選增強。

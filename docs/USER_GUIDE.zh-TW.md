@@ -174,6 +174,14 @@ export ACM_CODEX_REVIEW_REASONING_EFFORT=high
 
 需要稽核時才打開 `evidence:` 指向的 JSON。若畫面顯示 `BLOCKED`，代表成功條件未被證明；不要只看 worker 曾經啟動或 terminal 沒有報錯。
 
+受管 Standard／Adversarial／Research record 可以用同一個 CLI 讀回：
+
+```bash
+bun bin/aicoding-mate read-run <record.json>
+```
+
+CLI 只接受本次 invocation 解析出的單一 Firstmate authority root。若 run 是在自訂 `FM_HOME` 下建立，讀回時必須提供同一個 `FM_HOME`；它不會搜尋或信任第二個隱含 root。舊 Quick record 沒有 signed authority receipt，仍可閱讀，但會回報 `quick_record_historical_unverified` 與非零 exit code。
+
 ## v0.2 現在如何運作
 
 v0.2 有兩個核心：

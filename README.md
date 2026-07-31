@@ -29,8 +29,8 @@ flowchart TD
 
 AI Coding Mate 是薄薄的控制層，不是 Firstmate fork，也不取代 Herdr：
 
-- **AI Coding Mate**：決定目標、權限、流程、模型角色與報告形式。
-- **Firstmate**：擔任 Architect 與主要派工／監督者。
+- **AI Coding Mate**：接收 Architect 的目標與邊界，整合入口、read-back 與報告呈現。
+- **Firstmate**：是唯一 Workflow Authority，決定流程、角色、模型、fallback、停止條件與 Report Composer。
 - **Herdr**：提供可見的 agent runtime、工作區與 plugin surface。
 - **Codex／Claude／Cursor／Gemini**：依角色執行、搜尋、review 或裁決。
 
@@ -106,6 +106,8 @@ AI Coding Mate 不修改 pinned Firstmate clone；它以 app-owned PATH adapter 
 ```bash
 bun bin/aicoding-mate read-run state/aicoding-mate/runs/<run-id>.json
 ```
+
+Quick record 是未簽章的歷史資料，`read-run` 會顯示內容但固定回報 `quick_record_historical_unverified`，不會標成 verified。Standard／Adversarial／Research record 只有在本次 invocation 的單一 Firstmate authority root 驗簽成功後才會 exit 0。
 
 若 bootstrap 或 spawn 失敗，先依 pane 中的 blocker 修正，再執行 `bootstrap-firstmate` 並從新的 Quick pane 重試；系統不會把缺少登入、工具、pane、隔離 worktree 或 read-back 的情況包裝成成功。
 

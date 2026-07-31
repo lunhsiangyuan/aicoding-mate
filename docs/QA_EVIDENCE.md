@@ -4,11 +4,18 @@
 
 ## Release snapshot
 
-- Code commit：`d578cab`（canonical decision reconciliation、`FM_HOME` trust root、registry torn-write recovery、review negation parser）。
+- Runtime code commit：`a32e7d3`（包含 `d578cab` 的 decision reconciliation／registry recovery，並補上單一 trust anchor 與 Quick historical-unverified 邊界）。
 - Herdr：client/server `0.7.3`、protocol `16`、`compatible: true`。
-- Targeted gate：49 pass、0 fail。
-- Full gate：166 pass、0 fail、787 assertions；`bun run typecheck` 通過。
-- CLI gate：`--help` exit 0、缺少 Standard task exit 2、doctor 8/8 ready、Standard `read-run` exit 0。
+- Trust-boundary targeted gate：11 pass、0 fail、41 assertions。
+- Full gate：167 pass、0 fail、793 assertions；`bun run typecheck` 通過。
+- CLI gate：`--help` exit 0、缺少 Standard task exit 2、doctor 8/8 ready、Standard `read-run` exit 0、alternate `FM_HOME` exit 1、Quick historical record exit 1。
+
+## Evidence coverage
+
+- **真實 Herdr surface 已證明**：Standard 建立真 worker、報告回到來源 pane、durable record read-back、相同 intent duplicate coalesce。
+- **真實 Codex handoff 部分證明**：Native Review 建立 detached task 並開啟同一 Codex Desktop thread；原受管 turn 被中斷，因此 completed capsule 未證明。
+- **受控 runtime tests 已證明**：Adversarial／Research 的 Firstmate decision、跨模型角色、兩輪上限、coverage、registry、receipt 與 fail-closed 行為。
+- **尚未以真實 Herdr surface 證明**：Adversarial／Research 完整外部模型執行，以及 Native completed Review Capsule。這些不得由綠色 tests 取代。
 
 ## Standard：真實派工與 duplicate coalesce
 
@@ -77,7 +84,7 @@ Herdr 確實啟動 `codex app-server --stdio`，stable start receipt 落盤，Co
 | --- | --- | --- |
 | 相同 Standard intent 仍會建立第二個 worker | 相同 command 回到同一 canonical run；`w1Q` 無 `p10` | 否 |
 | Native crash 後會因 availability 時間改變而重送 `review/start` | 原 stable start 被回讀；同一 intent 無新 start artifact，結果 fail closed | 否 |
-| 任意 alternate signing root 可把 record 變成 verified | alternate-root regression 被拒；CLI 與 runtime 使用同一 `FM_HOME` root 才可完成 read-back | 否 |
+| 任意 alternate signing root 可把 record 變成 verified | `a32e7d3` 正負 regression 與實機 CLI 均拒絕 alternate `FM_HOME`；只接受本次 invocation 的單一 root | 否 |
 
 ## 已知限制
 
@@ -87,3 +94,4 @@ Herdr 確實啟動 `codex app-server --stdio`，stable start receipt 落盤，Co
 - Native annotation export 尚未由公開 contract 證明；Review Capsule 是可攜 completion artifact。
 - Herdr `pane run` 已通過；自動化 `pane send-keys Enter` 並未作為 release evidence。
 - 相容性目標仍是 Herdr `v0.7.5`；本次實機是 `0.7.3`／protocol `16`。
+- 本 snapshot 是 v0.2 authority core gate，不是所有入口的完整 production release；未完成項目以上方 Evidence coverage 為準。

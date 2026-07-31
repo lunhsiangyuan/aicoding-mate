@@ -165,9 +165,9 @@ Blocked by：V2-01 的 decision envelope identity。
 
 ### V2-03 Authority migration gate
 
-Status：完成核心 release evidence；Native Codex 自動 capsule 仍受 `interrupted` turn 的已知 operational limitation 約束。
+Status：authority core implemented；Standard real-surface gate 完成。完整 release evidence 尚缺 Adversarial／Research 真實 Herdr 執行與 Native completed capsule。
 
-Blocked by：V2-01、V2-02。
+Depends on：V2-01、V2-02（已實作）。
 
 交付：
 
@@ -177,4 +177,4 @@ Blocked by：V2-01、V2-02。
 - duplicate Standard dispatch 的回歸測試與實機證據。
 - 新 v0.2 record 只在 decision／registry／artifact strict read-back 通過後標示 verified。
 - 舊的未簽章 decision record 保持不可驗證，不回填 `firstmate_verified`。
-- 實機證據封存在 [QA_EVIDENCE.md](QA_EVIDENCE.md)：Standard duplicate coalesce、原 decision reconciliation、Herdr worker/pane read-back、Codex task handoff 與 interrupted fail-closed。
+- 證據封存在 [QA_EVIDENCE.md](QA_EVIDENCE.md)：Standard duplicate coalesce、原 decision reconciliation、Herdr worker/pane read-back、Codex task handoff 與 interrupted fail-closed；未完成的 real-surface lanes 明確列為未證明。

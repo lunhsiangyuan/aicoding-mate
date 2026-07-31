@@ -64,7 +64,7 @@ V2-01 Firstmate Workflow Authority
 
 ### V2-03 Authority migration gate
 
-- Status：core managed workflows implemented，real-surface evidence captured；Native completed capsule 仍有已記錄的 interrupted-turn limitation。
+- Status：core managed workflows implemented；Standard real-surface evidence captured。Adversarial／Research 真實 Herdr 執行與 Native completed capsule 尚未證明。
 - Owner：Integration
 - Blocked by：V2-01、V2-02
 - Outcome：Standard、Adversarial、Research、Codex Review 接到同一 decision/run authority；Quick 與 Context Branch 分別是帶 idempotency 的下游 primitive 與一次性 lineage handoff。
