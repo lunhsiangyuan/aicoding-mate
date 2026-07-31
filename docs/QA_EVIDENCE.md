@@ -2,6 +2,45 @@
 
 本文件保存 2026-07-31 在 macOS、Herdr 與 Codex Desktop 的實機 gate。它區分「已證明」「部分成功」「未證明」，不以測試綠燈或 task 曾啟動取代 runtime read-back。
 
+## v0.3.4 Research 回應、lineage 與 readable-report 修正
+
+使用者在 Herdr `w1T:p1` 從 home shell 輸入 `Ari`，`/doctor` 為 8/8 ready，但 `/research 查一下 Firstmate 如何使用` 只回 `BLOCKED: source_lineage_incomplete`。直接 shell session 有 workspace、tab、pane ID，卻沒有額外的 task/run ID；Standard 已能從三個 Herdr ID 合成穩定 lineage，High-intensity 仍要求另一組環境變數，因而同一入口行為不一致。
+
+修正後，Standard 與 High-intensity 共用 `sourceLineageFromEnvironment`。直接 shell session 的 task/run identity 由 workspace、tab、pane 組成；缺少任何真正的 Herdr source field 時，下層 authority gate 仍維持 fail closed。High-intensity 搜尋模型也由已不在 live catalog 的 `gpt-5.4-mini` 對齊為 `gpt-5.4-mini-medium`。
+
+真實 Herdr surface 分成兩次驗證：
+
+1. `w1T:p1` 的 `research-v0.2` run 成功越過 lineage gate並完成 7 個 model dispatch，但舊 report composer 把「哪些內容仍未知」的 unknown-only 回答誤判成 coverage gap，主報告只顯示「仍未完成」。這是 red evidence，不列為 UX 通過。
+2. `w1W:p1` 的 `research-v0.3` run 先立即顯示 `Ari 已開始執行 research 任務`，再完成 Search、兩輪 Author／Challenger／Judge，最後直接回覆 Firstmate 的安裝、`Ari` 入口、slash modes 與 Workflow Authority 說明。Judge 未完全接受仍顯示為一行 impact，但不再抹掉主答案。
+
+第二次 run 的 durable evidence：
+
+- Canonical run：`run-5abad156429de85e8bd70b9f7ec22a33b053c070e17804f4ff068e652f4a417a`
+- Record：`state/aicoding-mate/high-intensity-runs/high-intensity-5abad156429de85e8bd70b9f7ec22a33b053c070e17804f4ff068e652f4a417a.json`
+- Source lineage：`w1W:w1W:t1:w1W:p1`，完整保留 workspace／tab／pane。
+- Registry：`completed`、23 lineage events、7 個 accepted model receipts、completed artifact read-back 一致。
+- 實際模型：`gpt-5.4-mini-medium`、`gpt-5.6-sol-high`、`claude-fable-5-thinking-high`、`cursor-grok-4.5-high`。
+- Coverage：四個原始子問題均有 mapping，`complete=true`、`gaps=[]`；unknown 仍留在 evidence layer。
+- QA workspace 在 `/quit` 回到 shell 後已關閉；原本聚焦的 `w1N:p1` 未被改動。
+
+Automated gate：
+
+- `bun test`：189 pass、0 fail、888 assertions。
+- `bun run typecheck`：exit 0。
+- `git diff --check`：exit 0。
+- Regression 先在舊行為上得到 2 個 red failures，再驗證 unknown answer 視為 covered、最後一輪 Author claim 進入主報告、Judge 狀態保留在 impact。
+
+### v0.3.4 review 與 debugging gate
+
+環境中沒有 `review-work` 或 `debugging` executable；以完整 diff inspection、`diagnosing-bugs` feedback loop、full suite、兩次真實跨模型 Research 與下列 runtime hypotheses 完成同等 gate。
+
+| 假設 | runtime 證據 | 判定 |
+| --- | --- | --- |
+| Ari 沒有回應是 Herdr 或工具鏈未就緒 | 同一 pane `/doctor` 8/8 ready；舊 record 明確只缺 source lineage | 否；根因是 High-intensity lineage parser 與 Standard 不一致 |
+| 修正 lineage 後仍會在派工期間看起來完全靜默 | `w1W:p1` 在模型呼叫前立即讀回進度訊息，完成後回到 `[research] >` | 否 |
+| unknown-only 回答仍會讓整份 Research 變成「未完成」 | v0.3 record 的 unknown mapping `gap=null`、coverage `complete=true`，主 pane 先顯示實際使用答案 | 否 |
+| 新模型名稱只通過假 probe，沒有真的執行 | registry 有 7 個 accepted receipts，第一個 target 為 `openai:gpt-5.4-mini-medium`，其後跨 OpenAI／Anthropic／xAI | 否 |
+
 ## v0.3.3 home-shell launcher root 修正
 
 使用者在 Herdr home shell `w1R:p1` 啟動 v0.3.2 後，Standard 把 `/Users/lunhsiangyuan` 同時當成 app state root 與 project root，因而誤報 Firstmate distro、七個工具、git checkout 與來源 pane 全部失效。live `herdr api snapshot` 同時證明 `w1R:p1` 實際存在且為 focused pane；根因不是安裝缺失，而是 launcher 的 cwd authority 混用。

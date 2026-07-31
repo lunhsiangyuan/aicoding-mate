@@ -177,13 +177,12 @@ export function reviewCoverage(
     const evidence = research.discoveryDenominator.filter(
       (item) => item.subquestion === subquestion,
     );
-    const actionable = evidence.filter((item) => item.category !== "unknown");
     const categories = uniqueSorted(evidence.map((item) => item.category));
     return {
       subquestion,
       evidenceIds: evidence.map((item) => item.id),
       categories,
-      gap: actionable.length === 0 ? `coverage_gap:${subquestion}` : null,
+      gap: evidence.length === 0 ? `coverage_gap:${subquestion}` : null,
     };
   });
   const gaps = mappings.flatMap((mapping) => mapping.gap ? [mapping.gap] : []);
@@ -285,18 +284,31 @@ export function composeHighIntensityReport(
     `denominator:${options.research.discoveryDenominator.map((item) => item.id).join(",")}`,
     `stop_reason:${options.adversarial.stopReason}`,
   ];
+  const finalClaim = options.adversarial.rounds.at(-1)?.authorClaim.trim()
+    || options.input.task;
+  const unknownAnswerCount = options.coverage.mappings.filter(
+    (mapping) => mapping.categories.includes("unknown"),
+  ).length;
+  const reviewSummary = options.adversarial.accepted
+    ? "跨模型評審已接受。"
+    : "跨模型評審尚未完全接受；反例與理由保留在證據層。";
+  const coverageSummary = options.coverage.complete
+    ? unknownAnswerCount > 0
+      ? `所有原始子問題都有回覆；其中 ${unknownAnswerCount} 個子問題的答案是目前未知，已保留在證據層。`
+      : "所有原始子問題都有對應證據。"
+    : `仍缺少回答：${options.coverage.gaps.map((gap) =>
+      gap.replace(/^coverage_gap:/, "")
+    ).join("；")}。`;
   return {
     schemaVersion: 1,
     mainReport: {
-      conclusion: options.adversarial.accepted
-        ? `高強度工作流已由獨立評審接受：${options.input.task}`
-        : `高強度工作流在對抗審查後仍未完成：${options.input.task}`,
-      impact: options.coverage.complete
-        ? "所有原始子問題都有非未知類別的支持證據。"
-        : `仍有覆蓋缺口：${options.coverage.gaps.join("; ")}`,
-      nextAction: options.adversarial.accepted && options.coverage.complete
-        ? "可進入根層整合審查。"
-        : "整合前需先補齊覆蓋缺口或處理評審拒絕理由。",
+      conclusion: finalClaim,
+      impact: `${reviewSummary}${coverageSummary}`,
+      nextAction: !options.coverage.complete
+        ? "先補齊缺少回答的子問題，再採用主結論。"
+        : options.adversarial.accepted
+          ? "可依上列結論行動；技術細節可按需展開。"
+          : "可先採用上列可確認部分；若爭議會影響決策，再展開證據層。",
     },
     evidenceLayer: {
       configVersionHash: options.input.configVersionHash ?? defaultConfigVersionHash,
@@ -306,7 +318,7 @@ export function composeHighIntensityReport(
       limitations: [
         ...counterexamples,
         ...limits,
-        ...options.coverage.gaps.map((gap) => `coverage_gap:${gap}`),
+        ...options.coverage.gaps,
         `stop_reason:${options.adversarial.stopReason}`,
       ],
       unknowns: options.research.unknown.map((item) => `unknown:${item.id}:${item.statement}`),

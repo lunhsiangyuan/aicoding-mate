@@ -58,6 +58,7 @@ import {
   readModelDispatchReceipt,
   type ModelDispatchIdentity,
 } from "../runtime/model-dispatch-receipt.ts";
+import { sourceLineageFromEnvironment } from "./source-lineage.ts";
 
 export type StandardRuntimeStatus = "blocked" | "completed";
 
@@ -241,7 +242,7 @@ export async function createStandardRun(
     ],
   };
   const normalizedInput = normalizeStandardInput(input);
-  const source = sourceFromEnvironment(options.env);
+  const source = sourceLineageFromEnvironment(options.env);
   const provisionalId =
     `standard-invalid-${compactTimestamp(createdAt)}-${randomUUID()}`;
   const provisionalPath = join(
@@ -1718,20 +1719,6 @@ function composeRuntimeReport(options: {
       limitations: options.reviewDocument.limitations,
       unknowns: options.reviewDocument.unknowns,
     },
-  };
-}
-
-function sourceFromEnvironment(env: NodeJS.ProcessEnv): SourceLineage {
-  const paneId = env.HERDR_PANE_ID ?? env.ACM_QUICK_SOURCE_PANE ?? "";
-  const workspace = env.HERDR_WORKSPACE_ID ?? "";
-  const tabId = env.HERDR_TAB_ID ?? "";
-  const stableSource = [workspace, tabId, paneId].filter(Boolean).join(":");
-  return {
-    taskId: env.ACM_SOURCE_TASK_ID ?? stableSource,
-    runId: env.ACM_SOURCE_RUN_ID ?? stableSource,
-    workspace,
-    tabId,
-    paneId,
   };
 }
 

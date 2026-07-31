@@ -10,7 +10,7 @@ Ari 是 Herdr 裡的一個架構控制入口：
 
 介面與文件稱它為 **Ari**。指令仍使用 `aicoding-mate`；這只是穩定的技術名稱，不代表 Herdr 裡還有第二個產品入口。
 
-v0.3.3 只有一個 Herdr 主入口：在 Herdr shell 輸入 `Ari`，直接於目前 pane 進入；Quick、Standard、Expert、Research 與 Learn 都在同一處切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。
+v0.3.4 只有一個 Herdr 主入口：在 Herdr shell 輸入 `Ari`，直接於目前 pane 進入；Quick、Standard、Expert、Research 與 Learn 都在同一處切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。派工後 Ari 會立即顯示等待狀態；新的輸入會在本輪完成後處理。
 
 ## 安裝與從 Herdr 進入
 

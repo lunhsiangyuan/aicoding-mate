@@ -198,16 +198,28 @@ describe("high-intensity workflow core", () => {
     expect(partition.unknown.map((item) => item.id)).toEqual(["obs-unknown"]);
   });
 
-  test("coverage reviewer maps every original subquestion and reports unknown-only gaps", () => {
+  test("coverage reviewer treats an explicit unknown answer as covered", () => {
     const partition = partitionRecallFirstResearch(denominator);
     const coverage = reviewCoverage(input.subquestions, partition);
 
     expect(coverage.mappings.map((mapping) => mapping.subquestion)).toEqual([
       ...input.subquestions,
     ]);
-    expect(coverage.gaps).toEqual([`coverage_gap:${input.subquestions[2]}`]);
-    expect(coverage.complete).toBe(false);
+    expect(coverage.gaps).toEqual([]);
+    expect(coverage.complete).toBe(true);
     expect(coverage.mappings[0]?.evidenceIds).toEqual(["obs-confirmed", "obs-inference"]);
+    expect(coverage.mappings[2]).toMatchObject({
+      categories: ["unknown"],
+      gap: null,
+    });
+
+    const unanswered = "What was not researched?";
+    const incomplete = reviewCoverage(
+      [...input.subquestions, unanswered],
+      partition,
+    );
+    expect(incomplete.complete).toBe(false);
+    expect(incomplete.gaps).toEqual([`coverage_gap:${unanswered}`]);
   });
 
   test("two-layer report includes evidence, counterexamples, limits, lineage, and stop reason", () => {
@@ -251,13 +263,13 @@ describe("high-intensity workflow core", () => {
 
     assertDecisionReadyReport(report);
     expect(report.mainReport.conclusion).toBe(
-      "高強度工作流已由獨立評審接受：Evaluate a high-intensity architecture decision",
+      "The core preserves all evidence after revision.",
     );
     expect(report.mainReport.impact).toBe(
-      "仍有覆蓋缺口：coverage_gap:What evidence remains unknown?",
+      "跨模型評審已接受。所有原始子問題都有回覆；其中 1 個子問題的答案是目前未知，已保留在證據層。",
     );
     expect(report.mainReport.nextAction).toBe(
-      "整合前需先補齊覆蓋缺口或處理評審拒絕理由。",
+      "可依上列結論行動；技術細節可按需展開。",
     );
     expect(report.evidenceLayer.limitations.some((item) =>
       item.includes("v0.2 seams")
@@ -268,9 +280,9 @@ describe("high-intensity workflow core", () => {
     expect(report.evidenceLayer.limitations).toContain(
       "limit:obs-inference:Inferred from stage order rather than runtime output.",
     );
-    expect(report.evidenceLayer.limitations).toContain(
-      "coverage_gap:coverage_gap:What evidence remains unknown?",
-    );
+    expect(report.evidenceLayer.limitations.some((item) =>
+      item.startsWith("coverage_gap:")
+    )).toBe(false);
     expect(report.evidenceLayer.limitations).toContain("stop_reason:judge_accepted");
     expect(report.evidenceLayer.unknowns).toEqual([
       "unknown:obs-unknown:External model availability is not proven by this core.",
@@ -295,7 +307,7 @@ describe("high-intensity workflow core", () => {
       'coverage:{"categories":["confirmed","inference"],"evidenceIds":["obs-confirmed","obs-inference"],"gap":null,"subquestion":"What should the author build?"}',
     );
     expect(report.evidenceLayer.lineage).toContain(
-      'coverage:{"categories":["unknown"],"evidenceIds":["obs-unknown"],"gap":"coverage_gap:What evidence remains unknown?","subquestion":"What evidence remains unknown?"}',
+      'coverage:{"categories":["unknown"],"evidenceIds":["obs-unknown"],"gap":null,"subquestion":"What evidence remains unknown?"}',
     );
     expect(report.evidenceLayer.lineage).toContain(
       'judge_round:{"accepted":false,"acceptedReasons":[],"authorClaim":"The core is ready with explicit limitations.","challengerCounterexample":"External availability remains unknown.","rejectedReasons":["unknown availability must remain explicit"],"round":1}',
@@ -317,7 +329,45 @@ describe("high-intensity workflow core", () => {
       adversarial,
     });
     expect(completeReport.mainReport.impact).toBe(
-      "所有原始子問題都有非未知類別的支持證據。",
+      "跨模型評審已接受。所有原始子問題都有對應證據。",
     );
+
+    const rejected = runAdversarialReview([
+      {
+        round: 1,
+        authorClaim: "First draft.",
+        challengerCounterexample: "First counterexample.",
+        judge: {
+          accepted: false,
+          acceptedReasons: [],
+          rejectedReasons: ["first issue"],
+        },
+      },
+      {
+        round: 2,
+        authorClaim: "Useful revised answer despite a remaining dispute.",
+        challengerCounterexample: "Remaining counterexample.",
+        judge: {
+          accepted: false,
+          acceptedReasons: [],
+          rejectedReasons: ["remaining issue"],
+        },
+      },
+    ]);
+    const rejectedReport = composeHighIntensityReport({
+      input,
+      routingDecision: routed.decision,
+      availability,
+      research,
+      coverage,
+      adversarial: rejected,
+    });
+    expect(rejectedReport.mainReport).toEqual({
+      conclusion: "Useful revised answer despite a remaining dispute.",
+      impact:
+        "跨模型評審尚未完全接受；反例與理由保留在證據層。所有原始子問題都有回覆；其中 1 個子問題的答案是目前未知，已保留在證據層。",
+      nextAction:
+        "可先採用上列可確認部分；若爭議會影響決策，再展開證據層。",
+    });
   });
 });

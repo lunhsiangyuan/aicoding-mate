@@ -204,6 +204,9 @@ describe("cli", () => {
     expect(code).toBe(0);
     expect(outputAtDispatch).toContain("派工前 workflow 預覽");
     expect(outputAtDispatch).toContain("[Author] <--> [Challenger]");
+    expect(outputAtDispatch).toContain(
+      "Ari 已開始執行 expert 任務；結果完成後會回到這個 pane",
+    );
     expect(buffer.stdout.indexOf("派工前 workflow 預覽")).toBeLessThan(
       buffer.stdout.indexOf("結論：完成對抗式審查。"),
     );
@@ -461,7 +464,7 @@ describe("cli", () => {
       [
         "#!/bin/zsh",
         "if [ \"$1\" = \"--list-models\" ]; then",
-        "  printf '%s\\n' gpt-5.4-mini gpt-5.6-sol-high claude-fable-5-thinking-high cursor-grok-4.5-high",
+        "  printf '%s\\n' gpt-5.4-mini-medium gpt-5.6-sol-high claude-fable-5-thinking-high cursor-grok-4.5-high",
         "  exit 0",
         "fi",
         "prompt=\"${@: -1}\"",
@@ -494,8 +497,6 @@ describe("cli", () => {
         PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
         ACM_STATE_DIR: stateDir,
         FM_HOME: fmHome,
-        HERDR_TASK_ID: "task-cli-fm-home",
-        HERDR_RUN_ID: "run-cli-fm-home",
         HERDR_WORKSPACE_ID: "workspace-cli-fm-home",
         HERDR_TAB_ID: "tab-cli-fm-home",
         HERDR_PANE_ID: "pane-cli-fm-home",
@@ -512,6 +513,18 @@ describe("cli", () => {
     );
     expect(recordName).toBeDefined();
     if (recordName === undefined) throw new Error("high record missing");
+    const persisted = JSON.parse(
+      readFileSync(join(stateDir, "high-intensity-runs", recordName), "utf8"),
+    );
+    expect(persisted.workflowDecision.sourceLineage).toEqual({
+      taskId:
+        "workspace-cli-fm-home:tab-cli-fm-home:pane-cli-fm-home",
+      runId:
+        "workspace-cli-fm-home:tab-cli-fm-home:pane-cli-fm-home",
+      workspace: "workspace-cli-fm-home",
+      tabId: "tab-cli-fm-home",
+      paneId: "pane-cli-fm-home",
+    });
     const readBuffer = new BufferIO();
     const readCode = await main(
       [

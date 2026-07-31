@@ -1,6 +1,6 @@
 id = "ai-coding-mate"
 name = "Ari"
-version = "0.3.3"
+version = "0.3.4"
 min_herdr_version = "0.7.0"
 description = "Ari is the architect-facing Firstmate control layer for Herdr."
 platforms = ["macos", "linux"]

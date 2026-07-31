@@ -37,7 +37,7 @@ describe("high-intensity CLI port", () => {
       env: {},
       now: () => "2026-07-31T02:00:00.000Z",
       runner: recordingRunner(calls, [
-        "gpt-5.4-mini",
+        "gpt-5.4-mini-medium",
         "gpt-5.6-sol-high",
         "claude-fable-5-thinking-high",
         "cursor-grok-4.5-high",
@@ -63,7 +63,7 @@ describe("high-intensity CLI port", () => {
       {
         alias: "openai-search",
         family: "openai",
-        model: "gpt-5.4-mini",
+        model: "gpt-5.4-mini-medium",
         tier: "search",
         state: "available",
         reason: null,

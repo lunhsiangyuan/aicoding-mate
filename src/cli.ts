@@ -52,6 +52,7 @@ import {
   readHighIntensityRunRecord,
 } from "./integration/high-intensity-runtime.ts";
 import { runCodexReviewFromHerdrSelection } from "./integration/codex-review-command.ts";
+import { sourceLineageFromEnvironment } from "./integration/source-lineage.ts";
 import {
   buildMateRuntimeRequest,
   containsMateEnvelopeMarker,
@@ -65,7 +66,6 @@ import {
   type MateMode,
   type MateRuntimeRequest,
 } from "./mate-console.ts";
-import type { SourceLineage } from "./contracts/index.ts";
 
 export interface CliIO {
   cwd: string;
@@ -437,14 +437,14 @@ async function runHighIntensityCommand(
     input: {
       task: parsed.task,
       subquestions: parsed.questions,
-      configVersionHash: `${recipe}-v0.2`,
+      configVersionHash: `${recipe}-v0.3`,
     },
     availability,
     stateDir: stateDir(io),
     projectDir: parsed.projectDir,
     env: io.env,
     recipe,
-    source: highIntensitySource(io.env),
+    source: sourceLineageFromEnvironment(io.env),
     modelPort: createHighIntensityCliPort({
       cwd: parsed.projectDir,
       env: io.env,
@@ -481,24 +481,6 @@ async function runHighIntensityCommand(
       + `證據層：${readBack.recordPath}\n`,
   );
   return 0;
-}
-
-function highIntensitySource(
-  env: NodeJS.ProcessEnv,
-): SourceLineage | undefined {
-  const taskId = env.ACM_SOURCE_TASK_ID ?? env.HERDR_TASK_ID;
-  const runId = env.ACM_SOURCE_RUN_ID ?? env.HERDR_RUN_ID;
-  const workspace = env.HERDR_WORKSPACE_ID;
-  const tabId = env.HERDR_TAB_ID;
-  const paneId = env.HERDR_PANE_ID;
-  if (!taskId || !runId || !workspace || !tabId || !paneId) return undefined;
-  return {
-    taskId,
-    runId,
-    workspace,
-    tabId,
-    paneId,
-  };
 }
 
 function parseHighIntensityInput(
@@ -836,6 +818,10 @@ export async function conductMateConsole(
     }
 
     io.stdout.write(`\n${renderMateWorkflowGraph(action.mode)}\n\n`);
+    io.stdout.write(
+      `Ari 已開始執行 ${action.mode} 任務；結果完成後會回到這個 pane。`
+        + "執行期間的新輸入會在本輪結束後處理。\n\n",
+    );
     const captured = captureMateOutput(io);
     const request = buildMateRuntimeRequest(state, action.mode, action.task);
     let exitCode: number;
