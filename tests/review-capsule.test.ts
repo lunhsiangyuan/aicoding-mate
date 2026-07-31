@@ -28,6 +28,21 @@ const lineage: SourceLineage = {
 const workflowDecision = createFirstmateNativeReviewDecision({
   intentHash: "1".repeat(64),
   configVersion: "native-review-v0.2",
+  availability: {
+    id: "native-review-test-availability",
+    capturedAt: "2026-07-30T19:58:00.000Z",
+    candidates: [
+      {
+        alias: "codex-app-server",
+        provider: "openai",
+        family: "openai",
+        resolvedModel: "firstmate-policy-resolved",
+        capabilityTier: "architecture",
+        state: "available",
+        reason: "test_port_available",
+      },
+    ],
+  },
   source: lineage,
   reviewer: {
     role: "reviewer",

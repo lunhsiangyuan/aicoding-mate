@@ -25,6 +25,7 @@ export interface FirstmateDecisionOptions {
 export interface FirstmateNativeReviewDecisionOptions {
   readonly intentHash: string;
   readonly configVersion: string;
+  readonly availability: AvailabilitySnapshot;
   readonly source: SourceLineage;
   readonly reviewer: WorkflowRoleAssignment;
 }
@@ -171,7 +172,7 @@ export function createFirstmateNativeReviewDecision(
     hashes: {
       intentHash: options.intentHash,
       configHash: sha256(options.configVersion),
-      availabilityHash: sha256(JSON.stringify(options.reviewer)),
+      availabilityHash: availabilitySnapshotHash(options.availability),
     },
     sourceLineage: options.source,
     roleAssignments: [options.reviewer, reportComposerAssignment],

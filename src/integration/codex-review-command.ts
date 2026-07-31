@@ -37,6 +37,7 @@ import {
 } from "../branch/index.ts";
 import {
   assertWorkflowDecisionEnvelope,
+  type AvailabilitySnapshot,
   type WorkflowDecisionEnvelope,
 } from "../contracts/index.ts";
 import {
@@ -76,6 +77,7 @@ export interface CodexReviewCommandPorts {
   readonly createAppServerReviewPort?: (
     options: CodexAppServerRuntimeOptions,
   ) => DisposableCodexReviewPort;
+  readonly observeAvailability?: () => AvailabilitySnapshot;
   readonly launchDesktop?: CodexReviewDesktopLaunchRunner;
 }
 
@@ -208,8 +210,14 @@ export async function runCodexReviewFromHerdrSelection(
       env: options.env,
       now,
     });
+  const availability = observeNativeReviewAvailability(
+    options,
+    ports,
+    now,
+  );
   const decided = workflowAuthority.decideNativeReview({
     intentHash,
+    availability,
     source: enriched.value.source,
   });
   if (decided.status !== "resolved") {
@@ -556,6 +564,53 @@ function reviewCapsuleInput(
     delivery: "detached",
     parentThreadReadState: "complete",
     now,
+  };
+}
+
+function observeNativeReviewAvailability(
+  options: CodexReviewCommandOptions,
+  ports: CodexReviewCommandPorts,
+  now: () => string,
+): AvailabilitySnapshot {
+  if (ports.observeAvailability !== undefined) {
+    return ports.observeAvailability();
+  }
+  const capturedAt = now();
+  const injected = ports.createAppServerReviewPort !== undefined;
+  const command = options.env.ACM_CODEX_APP_SERVER_COMMAND ?? "codex";
+  const probe = injected
+    ? null
+    : spawnSync(command, ["--version"], {
+        cwd: options.cwd,
+        env: options.env,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 10_000,
+      });
+  const available = injected || (probe?.status === 0 && probe.error === undefined);
+  const version = probe === null
+    ? "injected_app_server_port"
+    : `${probe.stdout ?? ""}\n${probe.stderr ?? ""}`.trim().split(/\r?\n/, 1)[0]
+      || "version_unavailable";
+  return {
+    id: `native-review-${sha256(JSON.stringify({
+      capturedAt,
+      command,
+      available,
+      version,
+    })).slice(0, 16)}`,
+    capturedAt,
+    candidates: [
+      {
+        alias: "codex-app-server",
+        provider: "openai",
+        family: "openai",
+        resolvedModel: "firstmate-policy-resolved",
+        capabilityTier: "architecture",
+        state: available ? "available" : "unavailable",
+        reason: available ? version : "codex_app_server_probe_failed",
+      },
+    ],
   };
 }
 

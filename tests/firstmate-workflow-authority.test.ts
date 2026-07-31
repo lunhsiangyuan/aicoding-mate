@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { FileFirstmateWorkflowAuthority } from "../src/authority/firstmate-workflow-authority.ts";
-import type { SourceLineage } from "../src/contracts/index.ts";
+import type {
+  AvailabilitySnapshot,
+  SourceLineage,
+} from "../src/contracts/index.ts";
 
 const source: SourceLineage = {
   taskId: "task-authority-test",
@@ -13,6 +16,21 @@ const source: SourceLineage = {
   workspace: "W1",
   tabId: "T1",
   paneId: "P1",
+};
+const availability: AvailabilitySnapshot = {
+  id: "native-review-test-availability",
+  capturedAt: "2026-07-31T03:00:00.000Z",
+  candidates: [
+    {
+      alias: "codex-app-server",
+      provider: "openai",
+      family: "openai",
+      resolvedModel: "firstmate-policy-resolved",
+      capabilityTier: "architecture",
+      state: "available",
+      reason: "test_port_available",
+    },
+  ],
 };
 
 describe("Firstmate workflow authority", () => {
@@ -27,6 +45,7 @@ describe("Firstmate workflow authority", () => {
 
     expect(authority.decideNativeReview({
       intentHash: "a".repeat(64),
+      availability,
       source,
     })).toEqual({
       status: "blocked",
@@ -41,6 +60,7 @@ describe("Firstmate workflow authority", () => {
     });
     const decided = authority.decideNativeReview({
       intentHash: "b".repeat(64),
+      availability,
       source,
     });
     if (decided.status !== "resolved") {
@@ -63,5 +83,28 @@ describe("Firstmate workflow authority", () => {
         stageId: "reviewer",
       })
     ).toThrow("firstmate_stage_authorization_readback_failed");
+  });
+
+  test("does not issue a native-review decision without an available app-server observation", () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-authority-"));
+    const authority = new FileFirstmateWorkflowAuthority({
+      stateDir: join(root, "state"),
+    });
+
+    expect(authority.decideNativeReview({
+      intentHash: "d".repeat(64),
+      availability: {
+        ...availability,
+        candidates: availability.candidates.map((candidate) => ({
+          ...candidate,
+          state: "unavailable" as const,
+          reason: "codex_app_server_probe_failed",
+        })),
+      },
+      source,
+    })).toEqual({
+      status: "blocked",
+      reason: "native_review_unavailable:no_available_app_server",
+    });
   });
 });

@@ -86,6 +86,7 @@ export interface FirstmateWorkflowAuthorityPort {
   }): FirstmateHighIntensityDecisionResult;
   decideNativeReview(input: {
     readonly intentHash: string;
+    readonly availability: AvailabilitySnapshot;
     readonly source: SourceLineage;
   }): FirstmateNativeReviewDecisionResult;
   authorizeStage(input: {
@@ -208,8 +209,19 @@ export class FileFirstmateWorkflowAuthority
 
   decideNativeReview(input: {
     readonly intentHash: string;
+    readonly availability: AvailabilitySnapshot;
     readonly source: SourceLineage;
   }): FirstmateNativeReviewDecisionResult {
+    if (
+      !input.availability.candidates.some(
+        (candidate) => candidate.state === "available",
+      )
+    ) {
+      return {
+        status: "blocked",
+        reason: "native_review_unavailable:no_available_app_server",
+      };
+    }
     let configured;
     try {
       configured = loadNativeReviewModelConfig(this.#env);
@@ -233,6 +245,7 @@ export class FileFirstmateWorkflowAuthority
     const decision = createFirstmateNativeReviewDecision({
       intentHash: input.intentHash,
       configVersion: "native-review-v0.2",
+      availability: input.availability,
       source: input.source,
       reviewer,
     });
