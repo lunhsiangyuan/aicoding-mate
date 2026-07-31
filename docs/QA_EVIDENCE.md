@@ -4,7 +4,7 @@
 
 ## Release snapshot
 
-- Runtime code commit：`a32e7d3`（包含 `d578cab` 的 decision reconciliation／registry recovery，並補上單一 trust anchor 與 Quick historical-unverified 邊界）。
+- Runtime code commit：`f757016`（包含 `d578cab` 的 decision reconciliation／registry recovery、`a32e7d3` 的單一 CLI trust anchor／Quick historical-unverified 邊界，並要求所有 public read-back caller 顯式傳入 authority root）。
 - Herdr：client/server `0.7.3`、protocol `16`、`compatible: true`。
 - Trust-boundary targeted gate：11 pass、0 fail、41 assertions。
 - Full gate：167 pass、0 fail、793 assertions；`bun run typecheck` 通過。
