@@ -173,6 +173,57 @@ describe("high-intensity runtime", () => {
     )?.id).toBe(result.record.id);
   });
 
+  test("emits observable progress around every model stage", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-progress-"));
+    const progress: Array<{
+      status: "started" | "completed";
+      phase: "research" | "author" | "challenger" | "judge";
+      round: number | null;
+      completedSteps: number;
+      totalSteps: number;
+      model: string;
+    }> = [];
+
+    const result = await createHighIntensityRun({
+      input,
+      availability,
+      stateDir,
+      source,
+      modelPort: scriptedPort([]),
+      now: () => "2026-07-31T01:00:00.000Z",
+      onProgress(event) {
+        progress.push(event);
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(progress).toHaveLength(14);
+    expect(progress[0]).toEqual({
+      status: "started",
+      phase: "research",
+      round: null,
+      completedSteps: 0,
+      totalSteps: 7,
+      model: "configured-openai-search",
+    });
+    expect(progress[1]).toEqual({
+      status: "completed",
+      phase: "research",
+      round: null,
+      completedSteps: 1,
+      totalSteps: 7,
+      model: "configured-openai-search",
+    });
+    expect(progress.at(-1)).toEqual({
+      status: "completed",
+      phase: "judge",
+      round: 2,
+      completedSteps: 7,
+      totalSteps: 7,
+      model: "configured-gemini-judge",
+    });
+  });
+
   test("fails closed on bad research JSON before adversarial calls", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "aicoding-mate-high-runtime-"));
     const requests: HighIntensityModelRequest[] = [];

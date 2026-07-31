@@ -506,6 +506,15 @@ describe("cli", () => {
     expect(code).toBe(0);
     expect(buffer.stdout).toContain("對抗式架構審查");
     expect(buffer.stdout).toContain("證據層：");
+    expect(buffer.stdout).toContain(
+      "[Ari 1/最多 7] Search｜gpt-5.4-mini-medium｜執行中",
+    );
+    expect(buffer.stdout).toContain(
+      "[Ari 1/最多 7] Search｜gpt-5.4-mini-medium｜完成",
+    );
+    expect(buffer.stdout).toContain(
+      "[Ari 4/最多 7] Judge R1｜cursor-grok-4.5-high｜完成",
+    );
     expect(buffer.stdout).not.toContain("BLOCKED");
 
     const recordName = readdirSync(join(stateDir, "high-intensity-runs")).find(

@@ -50,6 +50,7 @@ import {
 import {
   createHighIntensityRun,
   readHighIntensityRunRecord,
+  type HighIntensityProgressEvent,
 } from "./integration/high-intensity-runtime.ts";
 import { runCodexReviewFromHerdrSelection } from "./integration/codex-review-command.ts";
 import { sourceLineageFromEnvironment } from "./integration/source-lineage.ts";
@@ -433,23 +434,30 @@ async function runHighIntensityCommand(
     cwd: parsed.projectDir,
     env: io.env,
   });
-  const result = await createHighIntensityRun({
-    input: {
-      task: parsed.task,
-      subquestions: parsed.questions,
-      configVersionHash: `${recipe}-v0.3`,
-    },
-    availability,
-    stateDir: stateDir(io),
-    projectDir: parsed.projectDir,
-    env: io.env,
-    recipe,
-    source: sourceLineageFromEnvironment(io.env),
-    modelPort: createHighIntensityCliPort({
-      cwd: parsed.projectDir,
+  const progress = createHighIntensityProgressReporter(io);
+  let result: Awaited<ReturnType<typeof createHighIntensityRun>>;
+  try {
+    result = await createHighIntensityRun({
+      input: {
+        task: parsed.task,
+        subquestions: parsed.questions,
+        configVersionHash: `${recipe}-v0.3`,
+      },
+      availability,
+      stateDir: stateDir(io),
+      projectDir: parsed.projectDir,
       env: io.env,
-    }),
-  });
+      recipe,
+      source: sourceLineageFromEnvironment(io.env),
+      modelPort: createHighIntensityCliPort({
+        cwd: parsed.projectDir,
+        env: io.env,
+      }),
+      onProgress: progress.observe,
+    });
+  } finally {
+    progress.stop();
+  }
   const trustedAuthorityRoot = resolveFirstmateAuthorityRoot(
     stateDir(io),
     io.env,
@@ -481,6 +489,65 @@ async function runHighIntensityCommand(
       + `證據層：${readBack.recordPath}\n`,
   );
   return 0;
+}
+
+function createHighIntensityProgressReporter(io: CliIO): {
+  readonly observe: (event: HighIntensityProgressEvent) => void;
+  readonly stop: () => void;
+} {
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let active:
+    | { readonly event: HighIntensityProgressEvent; readonly startedAt: number }
+    | undefined;
+  const stop = (): void => {
+    if (heartbeat !== undefined) clearInterval(heartbeat);
+    heartbeat = undefined;
+    active = undefined;
+  };
+  const observe = (event: HighIntensityProgressEvent): void => {
+    stop();
+    io.stdout.write(renderHighIntensityProgress(event));
+    if (event.status !== "started") return;
+    active = { event, startedAt: Date.now() };
+    heartbeat = setInterval(() => {
+      if (active === undefined) return;
+      const elapsedSeconds = Math.max(
+        1,
+        Math.floor((Date.now() - active.startedAt) / 1_000),
+      );
+      io.stdout.write(renderHighIntensityHeartbeat(active.event, elapsedSeconds));
+    }, 10_000);
+  };
+  return { observe, stop };
+}
+
+function renderHighIntensityProgress(event: HighIntensityProgressEvent): string {
+  const step = event.status === "started"
+    ? event.completedSteps + 1
+    : event.completedSteps;
+  const status = event.status === "started" ? "執行中" : "完成";
+  return `[Ari ${step}/最多 ${event.totalSteps}] ${highIntensityStageLabel(event)}`
+    + `｜${event.model}｜${status}\n`;
+}
+
+function renderHighIntensityHeartbeat(
+  event: HighIntensityProgressEvent,
+  elapsedSeconds: number,
+): string {
+  const step = event.completedSteps + 1;
+  return `[Ari ${step}/最多 ${event.totalSteps}] ${highIntensityStageLabel(event)}`
+    + `｜仍在執行（${elapsedSeconds} 秒）\n`;
+}
+
+function highIntensityStageLabel(event: HighIntensityProgressEvent): string {
+  const label = event.phase === "research"
+    ? "Search"
+    : event.phase === "author"
+    ? "Architect"
+    : event.phase === "challenger"
+    ? "Challenger"
+    : "Judge";
+  return event.round === null ? label : `${label} R${event.round}`;
 }
 
 function parseHighIntensityInput(

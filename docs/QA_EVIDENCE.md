@@ -2,6 +2,47 @@
 
 本文件保存 2026-07-31 在 macOS、Herdr 與 Codex Desktop 的實機 gate。它區分「已證明」「部分成功」「未證明」，不以測試綠燈或 task 曾啟動取代 runtime read-back。
 
+## v0.3.5 High-intensity live progress
+
+v0.3.4 只在 dispatcher 前印一次「已開始執行」，之後七個 model stage 都沒有輸出。更根本的問題是 High-intensity CLI Adapter 使用 `spawnSync` 執行 `agent`，整個 event loop 在單次模型呼叫期間被鎖住；即使加 timer，也不可能顯示 heartbeat。
+
+修正分成三層：High-intensity runtime 在每個權威 assignment 前後發出 `started`／`completed` event；CLI Adapter 只把長時間 model execution 改成 asynchronous child process，routing 與 exact assignment 不變；Ari pane 將 event 顯示成 stage 進度，並在 stage 尚未完成時每十秒顯示 elapsed heartbeat。Progress callback 是 observer，例外不影響 workflow 或 registry。
+
+Feedback loop 先得到兩個可重現的 red：完整 scripted Research 成功但 progress events 為 0；100ms 假 `agent` 執行期間，10ms timer 因 `spawnSync` 而未觸發。修正後兩者轉綠，CLI regression 另確認 Search start／complete 與 Judge complete 真的出現在 stdout。
+
+真實 Herdr surface：
+
+1. `w21:p1` 依序讀到 Search、Architect R1、Challenger R1、Judge R1、Architect R2、Challenger R2，以及每十秒 heartbeat。該 QA workspace 後來被 Herdr UI `workspace.close`，pane 因 Hangup 中止；這次只證明 live progress，不列為完成。
+2. `w22:p1` 以排隊輸入執行 `/research 請用三句話說明 Ari 的單一入口與 Firstmate 分工`。Search 30 秒完成，接著 Architect R1、Challenger R1、Judge R1；每個 stage 都有 start、heartbeat、complete。Judge R1 接受後回傳 Recall-first 報告，排隊的 `/quit` 才執行並回到 shell。
+
+第二次 run 的 durable evidence：
+
+- Canonical run：`run-dffd45acc3316adb9cda6f0c3092058c424159d26ff2c0e768b85665cf55322d`
+- Record：`state/aicoding-mate/high-intensity-runs/high-intensity-dffd45acc3316adb9cda6f0c3092058c424159d26ff2c0e768b85665cf55322d.json`
+- Registry：`completed`，四個 dispatch 均為 `accepted`，completed artifact path／hash read-back 一致。
+- 實際模型：`gpt-5.4-mini-medium`、`gpt-5.6-sol-high`、`claude-fable-5-thinking-high`、`cursor-grok-4.5-high`。
+- 時間：`2026-07-31T15:56:06.835Z` 至 `15:58:04.473Z`。
+- QA workspace 完成 read-back 後已關閉；未改動使用者原本的 Firstmate workspace。
+
+Automated gate：
+
+- `bun test`：191 pass、0 fail、897 assertions。
+- `bun run typecheck`：exit 0。
+- `git diff --check`：exit 0。
+
+### v0.3.5 review 與 debugging gate
+
+環境中沒有 `review-work` 或 `debugging` executable；以完整 diff inspection、`diagnosing-bugs` feedback loop、full suite、兩次真實 Herdr Research 與下列 runtime hypotheses 完成同等 gate。
+
+| 假設 | runtime 證據 | 判定 |
+| --- | --- | --- |
+| Runtime 已有進度，只是 CLI 沒顯示 | 完整 scripted run 的 callback events 為 0 | 否；runtime 原本沒有 progress surface |
+| Timer 可以直接補 heartbeat | 100ms 假 agent 執行期間，10ms timer 未觸發 | 否；`spawnSync` 鎖住 event loop |
+| Herdr pane 不會即時 flush | 測試 pane 在五秒 sleep 結束前已讀到第一行；真實 Research 逐次讀到 heartbeat | 否 |
+| Launcher 還指向舊版本 | launcher symlink 與 plugin root 都指向目前 repository；真實 pane 讀到新格式 | 否 |
+
+第一次 QA 被關閉後留下 `dispatching` canonical run 與六個 accepted receipts；它不冒充 completed。第二次 QA 使用新 task identity，取得獨立 completed run，沒有重送第一次的未確認 Judge R2。
+
 ## v0.3.4 Research 回應、lineage 與 readable-report 修正
 
 使用者在 Herdr `w1T:p1` 從 home shell 輸入 `Ari`，`/doctor` 為 8/8 ready，但 `/research 查一下 Firstmate 如何使用` 只回 `BLOCKED: source_lineage_incomplete`。直接 shell session 有 workspace、tab、pane ID，卻沒有額外的 task/run ID；Standard 已能從三個 Herdr ID 合成穩定 lineage，High-intensity 仍要求另一組環境變數，因而同一入口行為不一致。

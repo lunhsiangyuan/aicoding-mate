@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -37,10 +37,20 @@ export type HighIntensityCliRunner = (
   },
 ) => HighIntensityCliRunnerResult;
 
+export type HighIntensityCliExecutor = (
+  command: string,
+  args: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+  },
+) => Promise<HighIntensityCliRunnerResult>;
+
 export interface HighIntensityCliOptions {
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly runner?: HighIntensityCliRunner;
+  readonly executor?: HighIntensityCliExecutor;
   readonly now?: () => string;
 }
 
@@ -73,14 +83,19 @@ export function createHighIntensityCliPort(
   options: HighIntensityCliOptions,
 ): HighIntensityModelPort {
   const env = options.env ?? process.env;
-  const runner = options.runner ?? defaultRunner;
+  const syncRunner = options.runner;
+  const executor = options.executor
+    ?? (syncRunner
+      ? async (command, args, runnerOptions) =>
+        syncRunner(command, args, runnerOptions)
+      : defaultExecutor);
   const receiptRoot = join(
     resolveStateDir(options.cwd, env),
     "model-dispatches",
   );
   return {
     async execute(request: HighIntensityModelRequest): Promise<HighIntensityModelResult> {
-      const result = runner(
+      const result = await executor(
         "agent",
         [
           "-p",
@@ -239,6 +254,59 @@ function defaultRunner(
     stderr: result.stderr ?? "",
     error: result.error,
   };
+}
+
+function defaultExecutor(
+  command: string,
+  args: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+  },
+): Promise<HighIntensityCliRunnerResult> {
+  const timeoutMs = 240_000;
+  const maxBufferBytes = 4 * 1024 * 1024;
+  return new Promise((resolveResult) => {
+    let stdout = "";
+    let stderr = "";
+    let terminalError: Error | undefined;
+    let settled = false;
+    const child = spawn(command, [...args], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const finish = (status: number | null, error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolveResult({
+        status,
+        stdout,
+        stderr,
+        error: error ?? terminalError,
+      });
+    };
+    const append = (target: "stdout" | "stderr", chunk: Buffer): void => {
+      const text = chunk.toString("utf8");
+      const current = target === "stdout" ? stdout : stderr;
+      if (Buffer.byteLength(current) + chunk.byteLength > maxBufferBytes) {
+        terminalError = new Error("agent_output_too_large");
+        child.kill("SIGKILL");
+        return;
+      }
+      if (target === "stdout") stdout += text;
+      else stderr += text;
+    };
+    const timeout = setTimeout(() => {
+      terminalError = new Error("agent_execution_timed_out");
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
+    child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
+    child.on("error", (error) => finish(null, error));
+    child.on("close", (status) => finish(status));
+  });
 }
 
 function compactTimestamp(value: string): string {

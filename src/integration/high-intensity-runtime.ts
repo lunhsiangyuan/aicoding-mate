@@ -56,6 +56,15 @@ export type HighIntensityCallPhase =
   | "challenger"
   | "judge";
 
+export interface HighIntensityProgressEvent {
+  readonly status: "started" | "completed";
+  readonly phase: HighIntensityCallPhase;
+  readonly round: number | null;
+  readonly completedSteps: number;
+  readonly totalSteps: 7;
+  readonly model: string;
+}
+
 export interface HighIntensityModelRequest {
   readonly assignment: RoleAssignment;
   readonly prompt: string;
@@ -149,6 +158,7 @@ export interface HighIntensityRunOptions {
   readonly source?: SourceLineage;
   readonly now?: () => string;
   readonly workflowAuthority?: FirstmateWorkflowAuthorityPort;
+  readonly onProgress?: (event: HighIntensityProgressEvent) => void;
 }
 
 export interface HighIntensityRunResult {
@@ -410,6 +420,7 @@ export async function createHighIntensityRun(
       run: opened.run,
       workflowDecision,
       now,
+      onProgress: options.onProgress,
     });
     if (!researchResult.ok) {
       return blockedRegistered(
@@ -452,6 +463,7 @@ export async function createHighIntensityRun(
         run: opened.run,
         workflowDecision,
         now,
+        onProgress: options.onProgress,
       });
       if (!authorResult.ok) {
         return blockedRegistered(
@@ -494,6 +506,7 @@ export async function createHighIntensityRun(
         run: opened.run,
         workflowDecision,
         now,
+        onProgress: options.onProgress,
       });
       if (!challengerResult.ok) {
         return blockedRegistered(
@@ -539,6 +552,7 @@ export async function createHighIntensityRun(
         run: opened.run,
         workflowDecision,
         now,
+        onProgress: options.onProgress,
       });
       if (!judgeResult.ok) {
         return blockedRegistered(
@@ -697,6 +711,7 @@ async function executeModel(options: {
   readonly run: RunProjection;
   readonly workflowDecision: WorkflowDecisionEnvelope;
   readonly now: () => string;
+  readonly onProgress?: (event: HighIntensityProgressEvent) => void;
 }): Promise<
   | { readonly ok: true; readonly rawOutput: string }
   | {
@@ -726,6 +741,7 @@ async function executeModel(options: {
   if (current === null) {
     throw new Error("canonical_run_missing_during_dispatch");
   }
+  emitHighIntensityProgress(options, "started");
   const existingDispatch = current.attempts.at(-1)?.dispatches.find(
     (dispatch) => dispatch.idempotencyKey === idempotencyKey,
   );
@@ -872,7 +888,32 @@ async function executeModel(options: {
     idempotencyKey,
     receiptPath: result.receiptPath,
   });
+  emitHighIntensityProgress(options, "completed");
   return { ok: true, rawOutput: result.rawOutput };
+}
+
+function emitHighIntensityProgress(
+  options: {
+    readonly assignment: RoleAssignment;
+    readonly phase: HighIntensityCallPhase;
+    readonly round: number | null;
+    readonly calls: readonly HighIntensityCallRecord[];
+    readonly onProgress?: (event: HighIntensityProgressEvent) => void;
+  },
+  status: HighIntensityProgressEvent["status"],
+): void {
+  try {
+    options.onProgress?.({
+      status,
+      phase: options.phase,
+      round: options.round,
+      completedSteps: options.calls.length,
+      totalSteps: 7,
+      model: options.assignment.resolvedModel,
+    });
+  } catch {
+    return;
+  }
 }
 
 function markModelUnknownOutcome(

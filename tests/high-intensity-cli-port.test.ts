@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -190,6 +190,42 @@ describe("high-intensity CLI port", () => {
       status: "found",
       result,
     });
+  });
+
+  test("default agent execution leaves the event loop available for progress", async () => {
+    const root = mkdtempSync(join(tmpdir(), "aicoding-mate-async-agent-"));
+    const agentPath = join(root, "agent");
+    writeFileSync(
+      agentPath,
+      "#!/bin/sh\nsleep 0.1\nprintf 'model output\\n'\n",
+    );
+    chmodSync(agentPath, 0o755);
+    const port = createHighIntensityCliPort({
+      cwd: root,
+      env: {
+        PATH: root,
+        ACM_STATE_DIR: join(root, "state"),
+      },
+    });
+    let timerFired = false;
+    const timer = setTimeout(() => {
+      timerFired = true;
+    }, 10);
+
+    await port.execute({
+      assignment: authorAssignment,
+      prompt: "do the work",
+      contextId: "ctx-author-async",
+      phase: "author",
+      round: 1,
+      workflowDecisionId: "wfd_async_test",
+      decisionHash: "2".repeat(64),
+      stageId: "author",
+      idempotencyKey: "dispatch-async-test",
+    });
+    clearTimeout(timer);
+
+    expect(timerFired).toBe(true);
   });
 
   test("fails closed on missing listed model and failed agent command", () => {

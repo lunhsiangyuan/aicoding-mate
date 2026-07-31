@@ -10,7 +10,7 @@ Ari 是 Herdr 裡的一個架構控制入口：
 
 介面與文件稱它為 **Ari**。指令仍使用 `aicoding-mate`；這只是穩定的技術名稱，不代表 Herdr 裡還有第二個產品入口。
 
-v0.3.4 只有一個 Herdr 主入口：在 Herdr shell 輸入 `Ari`，直接於目前 pane 進入；Quick、Standard、Expert、Research 與 Learn 都在同一處切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。派工後 Ari 會立即顯示等待狀態；新的輸入會在本輪完成後處理。
+v0.3.5 只有一個 Herdr 主入口：在 Herdr shell 輸入 `Ari`，直接於目前 pane 進入；Quick、Standard、Expert、Research 與 Learn 都在同一處切換。底層沿用 v0.2 的 Workflow Authority 與 canonical Run Registry：Firstmate 決定誰做什麼，Adapter 只照單執行；同一個任務被重送時會回到同一 canonical run。Expert／Research 派工後會顯示真實 stage 進度與 heartbeat；新的輸入會在本輪完成後處理。
 
 ## 安裝與從 Herdr 進入
 
@@ -75,6 +75,19 @@ bun bin/aicoding-mate bootstrap-firstmate
 ```
 
 graph 顯示角色與執行順序，不預先假裝知道動態模型分配；只切換模式、查看 `/status` 或 `/help` 時不會出圖。
+
+### 如何盯 Expert／Research 進度
+
+高強度 workflow 會在同一個 pane 顯示目前 stage、Firstmate 指定的模型與完成狀態。例如：
+
+```text
+[Ari 1/最多 7] Search｜gpt-5.4-mini-medium｜執行中
+[Ari 1/最多 7] Search｜仍在執行（10 秒）
+[Ari 1/最多 7] Search｜gpt-5.4-mini-medium｜完成
+[Ari 2/最多 7] Architect R1｜gpt-5.6-sol-high｜執行中
+```
+
+「最多 7」是兩輪對抗式 workflow 的上限，不是假百分比；Judge 第一輪接受時會提早完成。單一 stage 尚未回傳時，每十秒更新一次 elapsed time。這些訊息只負責觀察，不參與 routing、完成判定或 Run Registry。
 
 同一 pane 會保留最近四輪摘要作為畫面內的短期 continuity。系統把本輪 `currentTask` 和歷史 `continuityContext` 分開：只有本輪文字會進入 Firstmate decision、scope gate、run identity 與 worker。舊回合不會被暗中當成新指令；如果新任務確實需要沿用某項決策，請在本輪用一句話複誦，或用 Context Branch 經確認後帶回。關閉 pane 後不保留這段短期 continuity；正式 run、evidence 與 lineage 仍在 Run Registry。
 
